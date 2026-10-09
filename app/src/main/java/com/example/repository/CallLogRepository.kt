@@ -1,5 +1,10 @@
 package com.example.repository
 
+import android.content.ContentResolver
+import android.content.Context
+import android.content.pm.PackageManager
+import android.provider.CallLog
+import androidx.core.content.ContextCompat
 import com.example.data.local.CallLogDao
 import com.example.data.model.CallLogEntity
 import com.example.data.model.CallType
@@ -8,9 +13,17 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 
 class CallLogRepository(
+    private val context: Context,
     private val callLogDao: CallLogDao
 ) {
     val allCallLogs: Flow<List<CallLogEntity>> = callLogDao.getAllCallLogs()
+
+    fun hasCallLogPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.READ_CALL_LOG
+        ) == PackageManager.PERMISSION_GRANTED
+    }
 
     fun getLogsByType(type: CallType): Flow<List<CallLogEntity>> {
         return callLogDao.getLogsByType(type)
@@ -46,60 +59,68 @@ class CallLogRepository(
         callLogDao.clearAll()
     }
 
-    suspend fun seedInitialLogsIfEmpty() = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val dummyLogs = listOf(
-            CallLogEntity(
-                number = "+1 (555) 019-2831",
-                cachedName = "Alex Vance",
-                callType = CallType.INCOMING,
-                timestamp = now - 25 * 60 * 1000,
-                durationSeconds = 142,
-                isRecorded = true
-            ),
-            CallLogEntity(
-                number = "+1 (555) 911-0000",
-                cachedName = "Brutalist Dispatch",
-                callType = CallType.OUTGOING,
-                timestamp = now - 2 * 3600 * 1000,
-                durationSeconds = 54,
-                isRecorded = false
-            ),
-            CallLogEntity(
-                number = "+1 (800) 555-SPAM",
-                cachedName = "Unknown Telemarketer",
-                callType = CallType.BLOCKED,
-                timestamp = now - 5 * 3600 * 1000,
-                durationSeconds = 0,
-                isRecorded = false
-            ),
-            CallLogEntity(
-                number = "+1 (555) 442-8921",
-                cachedName = "Elena Rostova",
-                callType = CallType.MISSED,
-                timestamp = now - 9 * 3600 * 1000,
-                durationSeconds = 0,
-                isRecorded = false
-            ),
-            CallLogEntity(
-                number = "+1 (555) 773-6102",
-                cachedName = "Kai Tanaka",
-                callType = CallType.OUTGOING,
-                timestamp = now - 22 * 3600 * 1000,
-                durationSeconds = 310,
-                isRecorded = true
-            ),
-            CallLogEntity(
-                number = "+1 (555) 604-9988",
-                cachedName = "Zara O'Connor",
-                callType = CallType.INCOMING,
-                timestamp = now - 48 * 3600 * 1000,
-                durationSeconds = 88,
-                isRecorded = false
-            )
+    suspend fun syncDeviceCallLogs(): Int = withContext(Dispatchers.IO) {
+        if (!hasCallLogPermission()) return@withContext 0
+
+        val resolver: ContentResolver = context.contentResolver
+        val projection = arrayOf(
+            CallLog.Calls.NUMBER,
+            CallLog.Calls.CACHED_NAME,
+            CallLog.Calls.TYPE,
+            CallLog.Calls.DATE,
+            CallLog.Calls.DURATION
         )
-        // Check if logs are empty by checking first
-        // We can safely insert if empty
-        dummyLogs.forEach { callLogDao.insert(it) }
+
+        val cursor = resolver.query(
+            CallLog.Calls.CONTENT_URI,
+            projection,
+            null,
+            null,
+            CallLog.Calls.DATE + " DESC"
+        )
+
+        var synced = 0
+        cursor?.use {
+            val numCol = it.getColumnIndex(CallLog.Calls.NUMBER)
+            val nameCol = it.getColumnIndex(CallLog.Calls.CACHED_NAME)
+            val typeCol = it.getColumnIndex(CallLog.Calls.TYPE)
+            val dateCol = it.getColumnIndex(CallLog.Calls.DATE)
+            val durCol = it.getColumnIndex(CallLog.Calls.DURATION)
+
+            val logs = mutableListOf<CallLogEntity>()
+            while (it.moveToNext() && logs.size < 100) {
+                val num = if (numCol >= 0) it.getString(numCol) ?: "Unknown" else "Unknown"
+                val name = if (nameCol >= 0) it.getString(nameCol) ?: "" else ""
+                val typeInt = if (typeCol >= 0) it.getInt(typeCol) else CallLog.Calls.INCOMING_TYPE
+                val date = if (dateCol >= 0) it.getLong(dateCol) else System.currentTimeMillis()
+                val dur = if (durCol >= 0) it.getInt(durCol) else 0
+
+                val callType = when (typeInt) {
+                    CallLog.Calls.OUTGOING_TYPE -> CallType.OUTGOING
+                    CallLog.Calls.MISSED_TYPE -> CallType.MISSED
+                    CallLog.Calls.BLOCKED_TYPE, CallLog.Calls.REJECTED_TYPE -> CallType.BLOCKED
+                    else -> CallType.INCOMING
+                }
+
+                logs.add(
+                    CallLogEntity(
+                        number = num,
+                        cachedName = name,
+                        callType = callType,
+                        timestamp = date,
+                        durationSeconds = dur
+                    )
+                )
+            }
+
+            if (logs.isNotEmpty()) {
+                callLogDao.clearAll() // replace with real logs
+                for (log in logs) {
+                    callLogDao.insert(log)
+                }
+                synced = logs.size
+            }
+        }
+        synced
     }
 }

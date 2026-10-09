@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,9 +34,15 @@ fun ContactsScreen(
     modifier: Modifier = Modifier
 ) {
     val contacts by viewModel.allContacts.collectAsState()
+    val hasPermission by viewModel.hasContactsPermission.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
     var showAddDialog by remember { mutableStateOf(false) }
-    var speedDialTargetContact by remember { mutableStateOf<ContactEntity?>(null) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        viewModel.onContactsPermissionResult(granted)
+    }
 
     val filteredContacts = remember(contacts, searchQuery) {
         if (searchQuery.isBlank()) contacts else {
@@ -75,6 +84,62 @@ fun ContactsScreen(
         }
 
         Spacer(modifier = Modifier.height(10.dp))
+
+        // --- Permission Banner if NOT Granted ---
+        if (!hasPermission) {
+            NeobrutalCard(
+                modifier = Modifier.fillMaxWidth(),
+                containerColor = NeobrutalYellow,
+                shadowOffset = 4.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Contacts,
+                            contentDescription = null,
+                            tint = NeobrutalBlack,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "DEVICE CONTACTS ACCESS",
+                            style = TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 14.sp,
+                                color = NeobrutalBlack
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "Allow access to read your phone's address book so your real contacts appear in Brutal Dial.",
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Normal,
+                            fontSize = 11.sp,
+                            color = NeobrutalBlack
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    NeobrutalButton(
+                        onClick = { permissionLauncher.launch(Manifest.permission.READ_CONTACTS) },
+                        text = "GRANT CONTACTS PERMISSION",
+                        containerColor = NeobrutalWhite,
+                        testTag = "grant_contacts_permission_btn"
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+        }
 
         // --- Search Bar ---
         NeobrutalTextField(
@@ -122,12 +187,21 @@ fun ContactsScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "NO CONTACTS FOUND",
+                            text = if (hasPermission) "NO CONTACTS FOUND" else "PERMISSION REQUIRED",
                             style = TextStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Black,
                                 fontSize = 15.sp,
                                 color = NeobrutalBlack
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (hasPermission) "Tap + ADD above or sync device address book." else "Grant permission to view your device contacts.",
+                            style = TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = Color.Gray
                             )
                         )
                     }
@@ -143,7 +217,6 @@ fun ContactsScreen(
                         contact = contact,
                         onCall = { viewModel.startCall(contact.phoneNumber, contact.displayName) },
                         onSms = { viewModel.swipeActionSms(contact.phoneNumber) },
-                        onSpeedDial = { speedDialTargetContact = contact },
                         onDelete = { viewModel.deleteContact(contact) }
                     )
                 }
@@ -155,29 +228,9 @@ fun ContactsScreen(
     if (showAddDialog) {
         AddContactDialog(
             onDismiss = { showAddDialog = false },
-            onConfirm = { name, number, email, speedDial ->
-                viewModel.createContact(name, number, email, speedDial)
+            onConfirm = { name, number, email ->
+                viewModel.createContact(name, number, email)
                 showAddDialog = false
-            }
-        )
-    }
-
-    // --- Speed Dial Assignment Dialog ---
-    if (speedDialTargetContact != null) {
-        val contact = speedDialTargetContact!!
-        SpeedDialAssignDialog(
-            contactName = contact.displayName,
-            currentDigit = contact.speedDialDigit,
-            onDismiss = { speedDialTargetContact = null },
-            onAssign = { digit ->
-                viewModel.assignSpeedDial(contact.id, digit)
-                speedDialTargetContact = null
-            },
-            onClear = {
-                if (contact.speedDialDigit != null) {
-                    viewModel.clearSpeedDial(contact.speedDialDigit)
-                }
-                speedDialTargetContact = null
             }
         )
     }
@@ -188,14 +241,19 @@ private fun ContactCardItem(
     contact: ContactEntity,
     onCall: () -> Unit,
     onSms: () -> Unit,
-    onSpeedDial: () -> Unit,
     onDelete: () -> Unit
 ) {
     val initials = if (contact.displayName.isNotBlank()) {
         contact.displayName.split(" ").mapNotNull { it.firstOrNull()?.uppercase() }.take(2).joinToString("")
     } else "#"
 
-    val avatarColor = Color(android.graphics.Color.parseColor(contact.colorHex))
+    val avatarColor = remember(contact.colorHex) {
+        try {
+            Color(android.graphics.Color.parseColor(contact.colorHex))
+        } catch (_: Exception) {
+            NeobrutalYellow
+        }
+    }
 
     NeobrutalCard(
         modifier = Modifier.fillMaxWidth(),
@@ -232,25 +290,16 @@ private fun ContactCardItem(
 
             // Details
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = contact.displayName.uppercase(),
-                        style = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 14.sp,
-                            color = NeobrutalBlack
-                        ),
-                        maxLines = 1
-                    )
-                    if (contact.speedDialDigit != null) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        NeobrutalBadge(
-                            text = "SPEED #${contact.speedDialDigit}",
-                            color = NeobrutalYellow
-                        )
-                    }
-                }
+                Text(
+                    text = contact.displayName.uppercase(),
+                    style = TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 14.sp,
+                        color = NeobrutalBlack
+                    ),
+                    maxLines = 1
+                )
 
                 Text(
                     text = contact.phoneNumber,
@@ -277,28 +326,11 @@ private fun ContactCardItem(
             }
 
             // Quick Actions
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                // Speed Dial Assign
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .background(NeobrutalYellow)
-                        .border(BorderStroke(2.dp, NeobrutalBlack))
-                        .clickable(onClick = onSpeedDial),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Bolt,
-                        contentDescription = "Speed Dial",
-                        tint = NeobrutalBlack,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 // Call
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(36.dp)
                         .background(NeobrutalGreen)
                         .border(BorderStroke(2.dp, NeobrutalBlack))
                         .clickable(onClick = onCall),
@@ -315,7 +347,7 @@ private fun ContactCardItem(
                 // SMS
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(36.dp)
                         .background(NeobrutalBlue)
                         .border(BorderStroke(2.dp, NeobrutalBlack))
                         .clickable(onClick = onSms),
@@ -332,7 +364,7 @@ private fun ContactCardItem(
                 // Delete
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(36.dp)
                         .background(NeobrutalWhite)
                         .border(BorderStroke(2.dp, NeobrutalBlack))
                         .clickable(onClick = onDelete),
@@ -353,12 +385,11 @@ private fun ContactCardItem(
 @Composable
 private fun AddContactDialog(
     onDismiss: () -> Unit,
-    onConfirm: (name: String, number: String, email: String, speedDial: Int?) -> Unit
+    onConfirm: (name: String, number: String, email: String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var number by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
-    var speedDialStr by remember { mutableStateOf("") }
 
     NeobrutalDialog(
         onDismissRequest = onDismiss,
@@ -376,7 +407,7 @@ private fun AddContactDialog(
             NeobrutalTextField(
                 value = number,
                 onValueChange = { number = it },
-                placeholder = "PHONE NUMBER (+1...)",
+                placeholder = "PHONE NUMBER",
                 testTag = "input_contact_number"
             )
 
@@ -385,13 +416,6 @@ private fun AddContactDialog(
                 onValueChange = { email = it },
                 placeholder = "EMAIL ADDRESS (OPTIONAL)",
                 testTag = "input_contact_email"
-            )
-
-            NeobrutalTextField(
-                value = speedDialStr,
-                onValueChange = { if (it.all { ch -> ch.isDigit() } && it.length <= 2) speedDialStr = it },
-                placeholder = "SPEED DIAL DIGIT (2-99)",
-                testTag = "input_contact_speed_dial"
             )
 
             Row(
@@ -408,8 +432,7 @@ private fun AddContactDialog(
                 NeobrutalButton(
                     onClick = {
                         if (name.isNotBlank() && number.isNotBlank()) {
-                            val digit = speedDialStr.toIntOrNull()
-                            onConfirm(name, number, email, digit)
+                            onConfirm(name, number, email)
                         }
                     },
                     modifier = Modifier.weight(1f),
@@ -417,70 +440,6 @@ private fun AddContactDialog(
                     containerColor = NeobrutalGreen,
                     enabled = name.isNotBlank() && number.isNotBlank(),
                     testTag = "save_contact_button"
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SpeedDialAssignDialog(
-    contactName: String,
-    currentDigit: Int?,
-    onDismiss: () -> Unit,
-    onAssign: (Int) -> Unit,
-    onClear: () -> Unit
-) {
-    var digitInput by remember { mutableStateOf(currentDigit?.toString() ?: "") }
-
-    NeobrutalDialog(
-        onDismissRequest = onDismiss,
-        title = "SPEED DIAL: $contactName",
-        titleColor = NeobrutalYellow
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(
-                text = "Assign key (2 - 99) for fast long-press dialing.",
-                style = TextStyle(
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = NeobrutalBlack
-                )
-            )
-
-            NeobrutalTextField(
-                value = digitInput,
-                onValueChange = { if (it.all { ch -> ch.isDigit() } && it.length <= 2) digitInput = it },
-                placeholder = "DIGIT (2-99)",
-                testTag = "speed_dial_input"
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (currentDigit != null) {
-                    NeobrutalButton(
-                        onClick = onClear,
-                        modifier = Modifier.weight(1f),
-                        text = "CLEAR",
-                        containerColor = NeobrutalPink,
-                        contentColor = NeobrutalWhite
-                    )
-                }
-
-                NeobrutalButton(
-                    onClick = {
-                        val digit = digitInput.toIntOrNull()
-                        if (digit != null && digit in 2..99) {
-                            onAssign(digit)
-                        }
-                    },
-                    modifier = Modifier.weight(1f),
-                    text = "SET DIAL",
-                    containerColor = NeobrutalGreen,
-                    enabled = digitInput.toIntOrNull()?.let { it in 2..99 } == true
                 )
             }
         }

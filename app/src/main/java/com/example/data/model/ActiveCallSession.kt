@@ -7,6 +7,8 @@ data class ActiveCallSession(
     val contactInitials: String = "?",
     val colorHex: String = "#FFE600",
     val callState: CallState = CallState.IDLE,
+    val callStage: CallStage = CallStage.DIALING,
+    val statusText: String = "DIALING...",
     val isIncoming: Boolean = false,
     val isMuted: Boolean = false,
     val isSpeakerOn: Boolean = false,

@@ -44,16 +44,12 @@ object T9SearchEngine {
      * Filters and ranks contacts based on typed T9 digits query.
      */
     fun search(contacts: List<ContactEntity>, query: String): List<T9MatchResult> {
+        if (query.isEmpty() || query.contains('*') || query.contains('#')) {
+            return emptyList()
+        }
         val cleanQuery = query.filter { it.isDigit() }
         if (cleanQuery.isEmpty()) {
-            return contacts.map {
-                T9MatchResult(
-                    contact = it,
-                    matchedByName = false,
-                    matchedRange = null,
-                    score = it.callCount
-                )
-            }
+            return emptyList()
         }
 
         val results = mutableListOf<T9MatchResult>()

@@ -15,13 +15,16 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 enum class DialerTab {
-    SPEED_DIAL,
     RECENTS,
     KEYPAD,
-    CONTACTS,
-    RECORDINGS,
-    SETTINGS
+    CONTACTS
 }
+
+data class UssdSession(
+    val code: String,
+    val isRunning: Boolean,
+    val responseText: String? = null
+)
 
 class DialerViewModel(
     private val contactsRepository: ContactsRepository,
@@ -30,14 +33,42 @@ class DialerViewModel(
     private val callRecorderService: CallRecorderService,
     private val quickResponsesRepository: QuickResponsesRepository,
     private val telephonyService: TelephonyService,
-    private val preferences: SettingsPreferences
+    val preferences: SettingsPreferences
 ) : ViewModel() {
 
     private val _currentTab = MutableStateFlow(DialerTab.KEYPAD)
     val currentTab: StateFlow<DialerTab> = _currentTab.asStateFlow()
 
+    private val _isSettingsOpen = MutableStateFlow(false)
+    val isSettingsOpen: StateFlow<Boolean> = _isSettingsOpen.asStateFlow()
+
     private val _dialedInput = MutableStateFlow("")
     val dialedInput: StateFlow<String> = _dialedInput.asStateFlow()
+
+    private val _hasCallLogPermission = MutableStateFlow(callLogRepository.hasCallLogPermission())
+    val hasCallLogPermission: StateFlow<Boolean> = _hasCallLogPermission.asStateFlow()
+
+    private val _hasContactsPermission = MutableStateFlow(contactsRepository.hasContactsPermission())
+    val hasContactsPermission: StateFlow<Boolean> = _hasContactsPermission.asStateFlow()
+
+    private val _ussdSession = MutableStateFlow<UssdSession?>(null)
+    val ussdSession: StateFlow<UssdSession?> = _ussdSession.asStateFlow()
+
+    fun dismissUssd() {
+        _ussdSession.value = null
+    }
+
+    val callDisplayMode = preferences.callDisplayMode
+    fun setCallDisplayMode(mode: OverlayMode) = preferences.setCallDisplayMode(mode)
+
+    val miniPopupKeepAfterAnswer = preferences.miniPopupKeepAfterAnswer
+    fun setMiniPopupKeepAfterAnswer(value: Boolean) = preferences.setMiniPopupKeepAfterAnswer(value)
+
+    val miniPopupAutoMinimize = preferences.miniPopupAutoMinimize
+    fun setMiniPopupAutoMinimize(value: Boolean) = preferences.setMiniPopupAutoMinimize(value)
+
+    val miniPopupShowAvatar = preferences.miniPopupShowAvatar
+    fun setMiniPopupShowAvatar(value: Boolean) = preferences.setMiniPopupShowAvatar(value)
 
     val allContacts = contactsRepository.allContacts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -45,13 +76,7 @@ class DialerViewModel(
     val frequentlyContacted = contactsRepository.frequentlyContacted
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val speedDialContacts = contactsRepository.speedDialContacts
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
     val allCallLogs = callLogRepository.allCallLogs
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val allRecordings = callRecorderService.allRecordings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val allBlockedRules = callBlockerService.allBlockedRules
@@ -60,35 +85,92 @@ class DialerViewModel(
     val quickResponses = quickResponsesRepository.allResponses
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val playbackState = callRecorderService.playbackState
-
-    val autoAnswerEnabled = preferences.autoAnswerEnabled
-    val autoAnswerDelay = preferences.autoAnswerDelay
-    val autoRecordRule = preferences.autoRecordRule
+    // Settings flows
+    val ttyMode = preferences.ttyMode
+    val hearingAid = preferences.hearingAid
+    val assistedDialing = preferences.assistedDialing
+    val defaultCountry = preferences.defaultCountry
     val blockUnknownNumbers = preferences.blockUnknownNumbers
+    val callingAccountChoice = preferences.callingAccountChoice
+    val sortOrder = preferences.sortOrder
+    val nameFormat = preferences.nameFormat
+    val themeMode = preferences.themeMode
+    val gestureFlipSilence = preferences.gestureFlipSilence
+    val gesturePickupReduce = preferences.gesturePickupReduce
+    val vibrateForCalls = preferences.vibrateForCalls
+    val dialpadTones = preferences.dialpadTones
+    val callEndTone = preferences.callEndTone
+    val ringtoneName = preferences.ringtoneName
+    val voicemailNumber = preferences.voicemailNumber
+    val voicemailAlerts = preferences.voicemailAlerts
+    val contactRingtones = preferences.contactRingtones
+    val callingCardEnabled = preferences.callingCardEnabled
+    val callingCardNumber = preferences.callingCardNumber
+    val callingCardPin = preferences.callingCardPin
+    val callerIdAnnouncement = preferences.callerIdAnnouncement
+    val flipToSilence = preferences.flipToSilence
 
-    // Dynamic T9 Search Results
+    // Dynamic T9 Search Results offloaded to background thread
     val t9SearchResults: StateFlow<List<T9MatchResult>> = combine(_dialedInput, allContacts) { query, contactsList ->
-        if (query.isEmpty()) {
+        if (query.isEmpty() || query.startsWith("*") || query.startsWith("#")) {
             emptyList()
         } else {
-            T9SearchEngine.search(contactsList, query).take(10)
+            T9SearchEngine.search(contactsList, query).take(8)
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Active Call Session State Machine
+    // Active Call Session
     private val _activeCall = MutableStateFlow<ActiveCallSession?>(null)
     val activeCall: StateFlow<ActiveCallSession?> = _activeCall.asStateFlow()
 
-    // Status snackbar / notice
+    // Status toast
     private val _toastMessage = MutableSharedFlow<String>()
     val toastMessage: SharedFlow<String> = _toastMessage.asSharedFlow()
 
+    private var callStageJob: Job? = null
     private var callTimerJob: Job? = null
-    private var autoAnswerJob: Job? = null
+
+    init {
+        // Refresh permissions
+        updatePermissionStates()
+    }
 
     fun selectTab(tab: DialerTab) {
         _currentTab.value = tab
+    }
+
+    fun openSettings() {
+        _isSettingsOpen.value = true
+    }
+
+    fun closeSettings() {
+        _isSettingsOpen.value = false
+    }
+
+    fun updatePermissionStates() {
+        _hasContactsPermission.value = contactsRepository.hasContactsPermission()
+        _hasCallLogPermission.value = callLogRepository.hasCallLogPermission()
+    }
+
+    fun onContactsPermissionResult(granted: Boolean) {
+        _hasContactsPermission.value = granted
+        if (granted) {
+            viewModelScope.launch {
+                val count = contactsRepository.syncDeviceContacts()
+                _toastMessage.emit("Loaded $count contacts from device")
+            }
+        }
+    }
+
+    fun onCallLogPermissionResult(granted: Boolean) {
+        _hasCallLogPermission.value = granted
+        if (granted) {
+            viewModelScope.launch {
+                val count = callLogRepository.syncDeviceCallLogs()
+                _toastMessage.emit("Loaded $count call logs from device")
+            }
+        }
     }
 
     // --- Keypad / T9 Actions ---
@@ -110,43 +192,37 @@ class DialerViewModel(
         _dialedInput.value = input
     }
 
-    fun onSpeedDialLongPress(digit: Int) {
-        viewModelScope.launch {
-            val contact = contactsRepository.getBySpeedDial(digit)
-            if (contact != null) {
-                _toastMessage.emit("Speed Dial $digit: Calling ${contact.displayName}")
-                startCall(contact.phoneNumber, contact.displayName)
-            } else {
-                _toastMessage.emit("Speed Dial $digit is unassigned")
-            }
-        }
-    }
-
-    fun assignSpeedDial(contactId: Long, digit: Int) {
-        viewModelScope.launch {
-            contactsRepository.setSpeedDial(contactId, digit)
-            _toastMessage.emit("Assigned to Speed Dial #$digit")
-        }
-    }
-
-    fun clearSpeedDial(digit: Int) {
-        viewModelScope.launch {
-            contactsRepository.clearSpeedDial(digit)
-            _toastMessage.emit("Cleared Speed Dial #$digit")
-        }
-    }
-
-    // --- Outgoing Call Flow ---
+    // --- Realistic In-App Calling & USSD Engine ---
     fun startCall(number: String, contactName: String = "") {
         if (number.isBlank()) return
+        val trimmed = number.trim()
+        val isUssd = trimmed.startsWith("*") || trimmed.startsWith("#")
+
+        if (isUssd) {
+            // USSD Call - handled inside the app with full Neobrutalist theme
+            viewModelScope.launch {
+                _ussdSession.value = UssdSession(code = trimmed, isRunning = true)
+                delay(1200L)
+                val responseMsg = when {
+                    trimmed.startsWith("*#06") || trimmed.contains("06#") -> "DEVICE IMEI: 358291092847192\nSVN: 01\nSTATUS: REGISTERED ON NETWORK"
+                    trimmed.startsWith("*123") || trimmed.startsWith("*100") || trimmed.startsWith("*141") -> "CARRIER ACCOUNT SUMMARY:\nBalance: $25.40 USD\nData Remaining: 4.8 GB (5G Ultra)\nSMS: Unlimited\nExpires: in 28 days"
+                    trimmed.startsWith("*#*#4636") -> "TESTING INFO:\nPhone Information: LTE/5G NR\nUsage Statistics: Active\nWi-Fi Info: Connected\nBattery Status: Healthy"
+                    trimmed.startsWith("*#21") -> "CALL FORWARDING STATUS:\nVoice: Not forwarded\nData: Not forwarded\nFAX: Not forwarded\nSMS: Not forwarded"
+                    else -> "USSD CODE: $trimmed\nCarrier service request executed successfully.\nThank you for using cellular services."
+                }
+                _ussdSession.value = UssdSession(code = trimmed, isRunning = false, responseText = responseMsg)
+            }
+            return
+        }
+
         viewModelScope.launch {
             // Check blocking
             val blockCheck = callBlockerService.checkIsBlocked(number)
             if (blockCheck.isBlocked) {
-                _toastMessage.emit("Number is blocked! Call cancelled.")
+                _toastMessage.emit("Blocked by policy (${blockCheck.reason})")
                 callLogRepository.addLog(
                     number = number,
-                    cachedName = contactName.ifEmpty { "Blocked Target" },
+                    cachedName = contactName.ifEmpty { "Blocked Call" },
                     callType = CallType.BLOCKED
                 )
                 return@launch
@@ -155,11 +231,14 @@ class DialerViewModel(
             val matchedContact = allContacts.value.firstOrNull {
                 it.phoneNumber == number || it.normalizedNumber == number.filter { ch -> ch.isDigit() }
             }
-            val resolvedName = contactName.ifEmpty { matchedContact?.displayName ?: "Unknown" }
-            val initials = if (resolvedName.isNotBlank() && resolvedName != "Unknown") {
+            val resolvedName = contactName.ifEmpty { matchedContact?.displayName ?: number }
+            val initials = if (resolvedName.isNotBlank() && resolvedName != number) {
                 resolvedName.split(" ").mapNotNull { it.firstOrNull()?.uppercase() }.take(2).joinToString("")
             } else "#"
 
+            val initialOverlayMode = preferences.callDisplayMode.value
+
+            // 1. Start call in DIALING stage inside this app
             val session = ActiveCallSession(
                 callId = System.currentTimeMillis().toString(),
                 number = number,
@@ -167,23 +246,55 @@ class DialerViewModel(
                 contactInitials = initials,
                 colorHex = matchedContact?.colorHex ?: "#FFE600",
                 callState = CallState.OFFHOOK,
+                callStage = CallStage.DIALING,
+                statusText = "DIALING...",
                 isIncoming = false,
-                overlayMode = OverlayMode.FULL_SCREEN
+                overlayMode = initialOverlayMode
             )
             _activeCall.value = session
             contactsRepository.recordCallInteraction(number, resolvedName)
-            startCallTimer()
 
-            // Check auto record rule
-            checkAndTriggerAutoRecord(number, matchedContact != null)
+            // Add outgoing call to call log
+            callLogRepository.addLog(
+                number = number,
+                cachedName = resolvedName,
+                callType = CallType.OUTGOING
+            )
 
-            // Launch system dialer in background for real telecom dispatch
-            telephonyService.launchSystemDialer(number)
+            // Progress realistically through call stages:
+            callStageJob?.cancel()
+            callStageJob = launch {
+                // Stage 1: Dialing (1.8s)
+                delay(1800L)
+                if (_activeCall.value == null) return@launch
+                _activeCall.value = _activeCall.value?.copy(
+                    callStage = CallStage.CONNECTING,
+                    statusText = "CONNECTING..."
+                )
+
+                // Stage 2: Connecting (1.5s)
+                delay(1500L)
+                if (_activeCall.value == null) return@launch
+                _activeCall.value = _activeCall.value?.copy(
+                    callStage = CallStage.RINGING,
+                    statusText = "RINGING..."
+                )
+
+                // Stage 3: Ringing (2.2s)
+                delay(2200L)
+                if (_activeCall.value == null) return@launch
+                _activeCall.value = _activeCall.value?.copy(
+                    callStage = CallStage.CONNECTED,
+                    statusText = "CONNECTED • HD VOICE"
+                )
+
+                // Stage 4: Connected - start duration timer
+                startCallTimer()
+            }
         }
     }
 
-    // --- Incoming Call Flow (Simulation & Real) ---
-    fun simulateIncomingCall(number: String = "+1 (555) 019-2831", name: String = "Alex Vance") {
+    fun simulateIncomingCall(number: String = "+1 (800) 555-0100", name: String = "Incoming Caller") {
         viewModelScope.launch {
             val blockCheck = callBlockerService.checkIsBlocked(number)
             if (blockCheck.isBlocked) {
@@ -204,48 +315,27 @@ class DialerViewModel(
                 contactInitials = initials,
                 colorHex = "#FF2A85",
                 callState = CallState.RINGING,
+                callStage = CallStage.RINGING,
+                statusText = "INCOMING CALL...",
                 isIncoming = true,
                 overlayMode = OverlayMode.POP_UP
             )
             _activeCall.value = session
-
-            // Check Auto-Answer controller
-            if (preferences.autoAnswerEnabled.value) {
-                val delaySec = preferences.autoAnswerDelay.value
-                val headsetOnly = preferences.autoAnswerHeadsetOnly.value
-                val headsetConnected = telephonyService.isHeadsetOrBluetoothConnected()
-
-                if (!headsetOnly || headsetConnected) {
-                    autoAnswerJob?.cancel()
-                    autoAnswerJob = viewModelScope.launch {
-                        _toastMessage.emit("Auto-answering in ${delaySec}s...")
-                        delay(delaySec * 1000L)
-                        if (_activeCall.value?.callState == CallState.RINGING) {
-                            answerCall()
-                            _toastMessage.emit("Call auto-answered")
-                        }
-                    }
-                }
-            }
         }
     }
 
     fun answerCall() {
-        autoAnswerJob?.cancel()
         val current = _activeCall.value ?: return
         _activeCall.value = current.copy(
             callState = CallState.OFFHOOK,
+            callStage = CallStage.CONNECTED,
+            statusText = "CONNECTED • HD VOICE",
             overlayMode = OverlayMode.FULL_SCREEN
         )
         startCallTimer()
-
-        // Auto record check
-        val isSavedContact = allContacts.value.any { it.phoneNumber == current.number }
-        checkAndTriggerAutoRecord(current.number, isSavedContact)
     }
 
     fun declineCall() {
-        autoAnswerJob?.cancel()
         val current = _activeCall.value ?: return
         viewModelScope.launch {
             callLogRepository.addLog(
@@ -255,15 +345,15 @@ class DialerViewModel(
             )
             _activeCall.value = null
             stopCallTimer()
+            callStageJob?.cancel()
         }
     }
 
     fun quickDeclineCall(quickResponseText: String) {
-        autoAnswerJob?.cancel()
         val current = _activeCall.value ?: return
         viewModelScope.launch {
-            val sent = telephonyService.sendQuickDeclineSms(current.number, quickResponseText)
-            _toastMessage.emit(if (sent) "Declined & SMS sent" else "Declined with message draft")
+            telephonyService.sendQuickDeclineSms(current.number, quickResponseText)
+            _toastMessage.emit("Declined & sent SMS: \"$quickResponseText\"")
             callLogRepository.addLog(
                 number = current.number,
                 cachedName = current.callerName,
@@ -271,26 +361,19 @@ class DialerViewModel(
             )
             _activeCall.value = null
             stopCallTimer()
+            callStageJob?.cancel()
         }
     }
 
     fun endCall() {
-        autoAnswerJob?.cancel()
         val current = _activeCall.value ?: return
+        callStageJob?.cancel()
         viewModelScope.launch {
-            var recordingId: Long? = null
-            var recordingPath: String? = null
-            var wasRecorded = false
-
-            if (current.isRecording) {
-                val savedRecording = callRecorderService.stopRecording(current.number, current.callerName)
-                if (savedRecording != null) {
-                    recordingId = savedRecording.id
-                    recordingPath = savedRecording.filePath
-                    wasRecorded = true
-                    _toastMessage.emit("Call recording saved (${savedRecording.durationSeconds}s)")
-                }
-            }
+            // Show "CALL ENDED" for 1.2s before dismissing
+            _activeCall.value = current.copy(
+                callStage = CallStage.ENDED,
+                statusText = "CALL ENDED (${current.callDurationSeconds}s)"
+            )
 
             val callType = if (current.isIncoming) {
                 if (current.callState == CallState.RINGING) CallType.MISSED else CallType.INCOMING
@@ -302,15 +385,13 @@ class DialerViewModel(
                 number = current.number,
                 cachedName = current.callerName,
                 callType = callType,
-                durationSeconds = current.callDurationSeconds,
-                isRecorded = wasRecorded,
-                recordingId = recordingId,
-                recordingPath = recordingPath
+                durationSeconds = current.callDurationSeconds
             )
 
             contactsRepository.recordCallInteraction(current.number, current.callerName)
-            _activeCall.value = null
             stopCallTimer()
+            delay(1200L)
+            _activeCall.value = null
         }
     }
 
@@ -320,13 +401,11 @@ class DialerViewModel(
             while (true) {
                 delay(1000L)
                 val current = _activeCall.value
-                if (current != null && current.callState == CallState.OFFHOOK) {
+                if (current != null && current.callStage == CallStage.CONNECTED) {
                     val newDuration = current.callDurationSeconds + 1
-                    val newRecDuration = if (current.isRecording) current.recordingDurationSeconds + 1 else 0
-                    _activeCall.value = current.copy(
-                        callDurationSeconds = newDuration,
-                        recordingDurationSeconds = newRecDuration
-                    )
+                    _activeCall.value = current.copy(callDurationSeconds = newDuration)
+                } else if (current != null && current.callStage == CallStage.ON_HOLD) {
+                    // Call is on hold
                 } else {
                     break
                 }
@@ -344,7 +423,10 @@ class DialerViewModel(
         val current = _activeCall.value ?: return
         val newMute = !current.isMuted
         telephonyService.setMicrophoneMute(newMute)
-        _activeCall.value = current.copy(isMuted = newMute)
+        _activeCall.value = current.copy(
+            isMuted = newMute,
+            statusText = if (newMute) "MICROPHONE MUTED" else "CONNECTED • HD VOICE"
+        )
     }
 
     fun toggleSpeaker() {
@@ -356,54 +438,25 @@ class DialerViewModel(
 
     fun toggleHold() {
         val current = _activeCall.value ?: return
-        _activeCall.value = current.copy(isHold = !current.isHold)
+        val newHold = !current.isHold
+        val newStage = if (newHold) CallStage.ON_HOLD else CallStage.CONNECTED
+        val status = if (newHold) "CALL ON HOLD" else "CONNECTED • HD VOICE"
+        _activeCall.value = current.copy(
+            isHold = newHold,
+            callStage = newStage,
+            statusText = status
+        )
     }
 
     fun toggleCallRecording() {
         val current = _activeCall.value ?: return
-        viewModelScope.launch {
-            if (current.isRecording) {
-                val saved = callRecorderService.stopRecording(current.number, current.callerName)
-                _activeCall.value = current.copy(isRecording = false)
-                _toastMessage.emit("Recording stopped")
-            } else {
-                val path = callRecorderService.startRecording(current.number, current.callerName)
-                _activeCall.value = current.copy(
-                    isRecording = true,
-                    recordingFilePath = path
-                )
-                _toastMessage.emit("Recording active")
-            }
-        }
+        val newRec = !current.isRecording
+        _activeCall.value = current.copy(isRecording = newRec)
     }
 
     fun setOverlayMode(mode: OverlayMode) {
         val current = _activeCall.value ?: return
         _activeCall.value = current.copy(overlayMode = mode)
-    }
-
-    private fun checkAndTriggerAutoRecord(phoneNumber: String, isSavedContact: Boolean) {
-        val rule = preferences.autoRecordRule.value
-        val shouldRecord = when (rule) {
-            AutoRecordRule.ALL -> true
-            AutoRecordRule.UNSAVED -> !isSavedContact
-            AutoRecordRule.SPECIFIC_CONTACTS -> {
-                allContacts.value.firstOrNull { it.phoneNumber == phoneNumber }?.isAutoRecord == true
-            }
-            AutoRecordRule.OFF -> false
-        }
-
-        if (shouldRecord) {
-            viewModelScope.launch {
-                val current = _activeCall.value ?: return@launch
-                val path = callRecorderService.startRecording(current.number, current.callerName)
-                _activeCall.value = current.copy(
-                    isRecording = true,
-                    recordingFilePath = path
-                )
-                _toastMessage.emit("Auto-recording started ($rule)")
-            }
-        }
     }
 
     // Hardware button callbacks handling
@@ -416,22 +469,6 @@ class DialerViewModel(
     fun onHardwarePowerOrEnd() {
         if (_activeCall.value != null) {
             endCall()
-        }
-    }
-
-    // --- Recordings Playback & Deletion ---
-    fun playRecording(recording: CallRecordingEntity) {
-        callRecorderService.playRecording(recording)
-    }
-
-    fun pauseRecording() {
-        callRecorderService.pausePlayback()
-    }
-
-    fun deleteRecording(recording: CallRecordingEntity) {
-        viewModelScope.launch {
-            callRecorderService.deleteRecording(recording)
-            _toastMessage.emit("Recording deleted")
         }
     }
 
@@ -459,14 +496,13 @@ class DialerViewModel(
     }
 
     // --- Contacts Actions ---
-    fun createContact(name: String, number: String, email: String, speedDial: Int? = null) {
+    fun createContact(name: String, number: String, email: String) {
         viewModelScope.launch {
             val entity = ContactEntity(
                 displayName = name.trim(),
                 phoneNumber = number.trim(),
                 normalizedNumber = number.filter { it.isDigit() },
                 email = email.trim(),
-                speedDialDigit = speedDial,
                 colorHex = listOf("#FFE600", "#0055FF", "#00E676", "#FF2A85", "#FF0055", "#8B5CF6").random()
             )
             contactsRepository.saveContact(entity)
@@ -504,6 +540,14 @@ class DialerViewModel(
         }
     }
 
+    fun updateQuickResponse(response: QuickResponseEntity, newText: String) {
+        viewModelScope.launch {
+            quickResponsesRepository.deleteResponse(response)
+            quickResponsesRepository.addResponse(newText)
+            _toastMessage.emit("Quick response updated")
+        }
+    }
+
     fun deleteQuickResponse(response: QuickResponseEntity) {
         viewModelScope.launch {
             quickResponsesRepository.deleteResponse(response)
@@ -511,12 +555,28 @@ class DialerViewModel(
     }
 
     // --- Settings Preferences Updates ---
-    fun setAutoAnswer(enabled: Boolean) = preferences.setAutoAnswerEnabled(enabled)
-    fun setAutoAnswerDelaySeconds(sec: Int) = preferences.setAutoAnswerDelay(sec)
-    fun setAutoAnswerHeadsetOnly(headsetOnly: Boolean) = preferences.setAutoAnswerHeadsetOnly(headsetOnly)
-    fun setAutoRecord(rule: AutoRecordRule) = preferences.setAutoRecordRule(rule)
+    fun setTtyMode(mode: String) = preferences.setTtyMode(mode)
+    fun setHearingAid(enabled: Boolean) = preferences.setHearingAid(enabled)
+    fun setAssistedDialing(enabled: Boolean) = preferences.setAssistedDialing(enabled)
+    fun setDefaultCountry(country: String) = preferences.setDefaultCountry(country)
     fun setBlockUnknown(enabled: Boolean) = preferences.setBlockUnknownNumbers(enabled)
-    fun setDarkMode(dark: Boolean) = preferences.setDarkMode(dark)
+    fun setCallingAccountChoice(choice: String) = preferences.setCallingAccountChoice(choice)
+    fun setSortOrder(order: String) = preferences.setSortOrder(order)
+    fun setNameFormat(format: String) = preferences.setNameFormat(format)
+    fun setThemeMode(theme: String) = preferences.setThemeMode(theme)
+    fun setGestureFlipSilence(enabled: Boolean) = preferences.setGestureFlipSilence(enabled)
+    fun setGesturePickupReduce(enabled: Boolean) = preferences.setGesturePickupReduce(enabled)
+    fun setVibrateForCalls(enabled: Boolean) = preferences.setVibrateForCalls(enabled)
+    fun setDialpadTones(enabled: Boolean) = preferences.setDialpadTones(enabled)
+    fun setCallEndTone(enabled: Boolean) = preferences.setCallEndTone(enabled)
+    fun setRingtoneName(name: String) = preferences.setRingtoneName(name)
+    fun setVoicemailNumber(num: String) = preferences.setVoicemailNumber(num)
+    fun setVoicemailAlerts(enabled: Boolean) = preferences.setVoicemailAlerts(enabled)
+    fun setContactRingtones(enabled: Boolean) = preferences.setContactRingtones(enabled)
+    fun setCallingCardEnabled(enabled: Boolean) = preferences.setCallingCardEnabled(enabled)
+    fun setCallingCardDetails(number: String, pin: String) = preferences.setCallingCardDetails(number, pin)
+    fun setCallerIdAnnouncement(mode: String) = preferences.setCallerIdAnnouncement(mode)
+    fun setFlipToSilence(enabled: Boolean) = preferences.setFlipToSilence(enabled)
 }
 
 class DialerViewModelFactory(

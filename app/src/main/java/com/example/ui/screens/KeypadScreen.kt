@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -16,14 +20,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.PhoneCallback
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
@@ -31,10 +34,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.t9.T9MatchResult
 import com.example.ui.components.NeobrutalBadge
 import com.example.ui.components.NeobrutalButton
 import com.example.ui.components.NeobrutalCard
+import com.example.ui.components.NeobrutalDialog
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DialerViewModel
 
@@ -63,76 +68,125 @@ fun KeypadScreen(
     viewModel: DialerViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val dialedInput by viewModel.dialedInput.collectAsState()
     val t9Results by viewModel.t9SearchResults.collectAsState()
     val haptic = LocalHapticFeedback.current
+
+    val callPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (dialedInput.isNotBlank()) {
+            viewModel.startCall(dialedInput)
+        }
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(NeobrutalBgLight)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // --- 1. T9 Search & Dialed Number Header ---
-        Column(modifier = Modifier.fillMaxWidth()) {
-            // Number Display Box
-            NeobrutalCard(
-                modifier = Modifier.fillMaxWidth(),
-                containerColor = NeobrutalWhite,
-                shadowOffset = 4.dp
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
+        // --- 1. Top Section: Recommendations (T9 matched contacts above the number section) ---
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 40.dp)
+        ) {
+            if (t9Results.isNotEmpty()) {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = if (dialedInput.isEmpty()) "DIAL NUMBER OR T9..." else dialedInput,
-                        style = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Black,
-                            fontSize = if (dialedInput.length > 12) 22.sp else 28.sp,
-                            color = if (dialedInput.isEmpty()) Color.Gray else NeobrutalBlack,
-                            letterSpacing = 1.sp
-                        ),
-                        maxLines = 1,
-                        modifier = Modifier.testTag("dialed_number_display")
-                    )
-
-                    if (dialedInput.isNotEmpty()) {
-                        Text(
-                            text = "T9 MATCHES: ${t9Results.size}",
-                            style = TextStyle(
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                color = NeobrutalBlue
-                            )
+                    items(t9Results, key = { it.contact.id }) { match ->
+                        T9ContactChip(
+                            match = match,
+                            onClick = {
+                                viewModel.startCall(match.contact.phoneNumber, match.contact.displayName)
+                            },
+                            onLongClick = {
+                                viewModel.setDialedInput(match.contact.phoneNumber)
+                            }
                         )
                     }
                 }
             }
+        }
 
-            // Inline T9 Matched Contacts Row
-            AnimatedVisibility(
-                visible = t9Results.isNotEmpty(),
-                enter = expandVertically(),
-                exit = shrinkVertically()
+        Spacer(modifier = Modifier.weight(1f))
+
+        // --- 2. Dialed Number Display (just above the numbers section, empty when blank) ---
+        NeobrutalCard(
+            modifier = Modifier.fillMaxWidth(),
+            containerColor = NeobrutalWhite,
+            shadowOffset = 3.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.padding(top = 8.dp)) {
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
+                Text(
+                    text = dialedInput, // Completely empty when blank as requested
+                    style = TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Black,
+                        fontSize = if (dialedInput.length > 12) 22.sp else 28.sp,
+                        color = NeobrutalBlack,
+                        letterSpacing = 1.sp
+                    ),
+                    maxLines = 1,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("dialed_number_display")
+                )
+
+                if (dialedInput.startsWith("*") || dialedInput.startsWith("#") || dialedInput.contains("#")) {
+                    NeobrutalBadge(
+                        text = "USSD CODE",
+                        color = NeobrutalCyan
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // --- 3. Floating Keypad Numbers Section ---
+        NeobrutalCard(
+            modifier = Modifier.fillMaxWidth(),
+            containerColor = NeobrutalWhite,
+            shadowOffset = 6.dp, // Distinct floating shadow
+            borderWidth = 3.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (row in 0 until 4) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(t9Results, key = { it.contact.id }) { match ->
-                            T9ContactChip(
-                                match = match,
+                        for (col in 0 until 3) {
+                            val key = KEYPAD_KEYS[row * 3 + col]
+                            KeypadButton(
+                                key = key,
+                                modifier = Modifier.weight(1f),
                                 onClick = {
-                                    viewModel.startCall(match.contact.phoneNumber, match.contact.displayName)
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    viewModel.appendDigit(key.digit[0])
                                 },
                                 onLongClick = {
-                                    viewModel.setDialedInput(match.contact.phoneNumber)
+                                    if (key.digit == "0") {
+                                        viewModel.appendDigit('+')
+                                    }
                                 }
                             )
                         }
@@ -141,43 +195,9 @@ fun KeypadScreen(
             }
         }
 
-        // --- 2. Keypad Matrix Grid ---
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            for (row in 0 until 4) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    for (col in 0 until 3) {
-                        val key = KEYPAD_KEYS[row * 3 + col]
-                        KeypadButton(
-                            key = key,
-                            modifier = Modifier.weight(1f),
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                viewModel.appendDigit(key.digit[0])
-                            },
-                            onLongClick = {
-                                val digitInt = key.digit.toIntOrNull()
-                                if (digitInt != null && digitInt in 2..9) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    viewModel.onSpeedDialLongPress(digitInt)
-                                } else if (key.digit == "0") {
-                                    viewModel.appendDigit('+')
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-        }
+        Spacer(modifier = Modifier.height(10.dp))
 
-        // --- 3. Action Bar (Call & Backspace) ---
+        // --- 4. Action Bar (Backspace & Call with perfect Neobrutal shadows) ---
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -193,9 +213,10 @@ fun KeypadScreen(
                 },
                 modifier = Modifier
                     .weight(0.35f)
-                    .height(54.dp),
+                    .height(56.dp),
                 containerColor = NeobrutalPink,
                 contentColor = NeobrutalWhite,
+                shadowOffset = 4.dp,
                 testTag = "keypad_backspace_button",
                 icon = {
                     Icon(
@@ -207,20 +228,36 @@ fun KeypadScreen(
                 }
             )
 
-            // Primary Call Button
+            // Primary Call Button (Launches in-app calling or USSD without kicking out of app)
             NeobrutalButton(
                 onClick = {
                     if (dialedInput.isNotBlank()) {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.startCall(dialedInput)
+                        val hasCallPermission = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.CALL_PHONE
+                        ) == PackageManager.PERMISSION_GRANTED
+                        val isUssd = dialedInput.startsWith("*") || dialedInput.startsWith("#") || dialedInput.contains("#")
+                        if (!hasCallPermission && !isUssd) {
+                            callPermissionLauncher.launch(Manifest.permission.CALL_PHONE)
+                        } else {
+                            viewModel.startCall(dialedInput)
+                        }
+                    } else {
+                        // Redial last dialed number if available
+                        val lastNumber = viewModel.allCallLogs.value.firstOrNull()?.number
+                        if (!lastNumber.isNullOrBlank()) {
+                            viewModel.setDialedInput(lastNumber)
+                        }
                     }
                 },
                 modifier = Modifier
                     .weight(0.65f)
-                    .height(54.dp),
+                    .height(56.dp),
                 text = "CALL",
                 containerColor = NeobrutalGreen,
                 contentColor = NeobrutalBlack,
+                shadowOffset = 4.dp,
                 testTag = "keypad_call_button",
                 icon = {
                     Icon(
@@ -228,60 +265,6 @@ fun KeypadScreen(
                         contentDescription = "Call",
                         tint = NeobrutalBlack,
                         modifier = Modifier.size(24.dp)
-                    )
-                }
-            )
-        }
-
-        // Simulation / Testing Helpers for Telephony triggers
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            NeobrutalButton(
-                onClick = {
-                    viewModel.simulateIncomingCall(
-                        number = "+1 (555) 019-2831",
-                        name = "Alex Vance"
-                    )
-                },
-                modifier = Modifier.weight(1f),
-                text = "TEST INCOMING",
-                containerColor = NeobrutalYellow,
-                borderWidth = 2.dp,
-                shadowOffset = 2.dp,
-                testTag = "test_incoming_button",
-                icon = {
-                    Icon(
-                        Icons.Default.PhoneCallback,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = NeobrutalBlack
-                    )
-                }
-            )
-
-            NeobrutalButton(
-                onClick = {
-                    viewModel.simulateIncomingCall(
-                        number = "800-555-SPAM",
-                        name = "Blocked Robocall"
-                    )
-                },
-                modifier = Modifier.weight(1f),
-                text = "TEST BLOCKED",
-                containerColor = NeobrutalCyan,
-                borderWidth = 2.dp,
-                shadowOffset = 2.dp,
-                testTag = "test_blocked_button",
-                icon = {
-                    Icon(
-                        Icons.Default.Shield,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = NeobrutalBlack
                     )
                 }
             )
@@ -300,7 +283,7 @@ private fun KeypadButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    val translation = if (isPressed) 3.dp else 0.dp
+    val translation = if (isPressed) 2.dp else 0.dp
     val shadowOffset = if (isPressed) 0.dp else 3.dp
 
     Box(
@@ -369,6 +352,14 @@ private fun T9ContactChip(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val chipColor = remember(match.contact.colorHex) {
+        try {
+            Color(android.graphics.Color.parseColor(match.contact.colorHex))
+        } catch (_: Exception) {
+            NeobrutalYellow
+        }
+    }
+
     Box(
         modifier = Modifier
             .padding(end = 3.dp, bottom = 3.dp)
@@ -380,12 +371,12 @@ private fun T9ContactChip(
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .offset(x = 3.dp, y = 3.dp)
+                .offset(x = 2.dp, y = 2.dp)
                 .background(NeobrutalBlack)
         )
         Row(
             modifier = Modifier
-                .background(Color(android.graphics.Color.parseColor(match.contact.colorHex)))
+                .background(chipColor)
                 .border(BorderStroke(2.dp, NeobrutalBlack))
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically

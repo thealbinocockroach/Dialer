@@ -44,6 +44,12 @@ interface ContactDao {
 
     @Query("SELECT COUNT(*) FROM contacts")
     suspend fun getCount(): Int
+
+    @Query("DELETE FROM contacts")
+    suspend fun clearAll()
+
+    @Query("DELETE FROM contacts WHERE lookupKey = '' OR lookupKey IS NULL OR displayName IN ('Alex Vance', 'Brutalist Dispatch', 'Elena Rostova', 'Kai Tanaka', 'Marcus Brody', 'Nova Sterling', 'Samir Patel', 'Zara O''Connor')")
+    suspend fun deleteMockContacts()
 }
 
 @Dao
@@ -65,6 +71,9 @@ interface CallLogDao {
 
     @Query("DELETE FROM call_logs")
     suspend fun clearAll()
+
+    @Query("DELETE FROM call_logs WHERE cachedName IN ('Alex Vance', 'Brutalist Dispatch', 'Unknown Telemarketer', 'Elena Rostova', 'Kai Tanaka', 'Zara O''Connor', 'Marcus Brody', 'Nova Sterling', 'Samir Patel') OR number LIKE '%555-01%' OR number LIKE '%55501%'")
+    suspend fun deleteMockLogs()
 }
 
 @Dao

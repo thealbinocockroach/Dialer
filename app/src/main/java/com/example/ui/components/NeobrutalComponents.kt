@@ -48,7 +48,7 @@ fun NeobrutalCard(
             .then(tagModifier)
             .padding(end = shadowOffset, bottom = shadowOffset)
     ) {
-        // Hard-edged drop shadow box behind
+        // Hard-edged drop shadow box behind matching exact content size
         Box(
             modifier = Modifier
                 .matchParentSize()
@@ -91,15 +91,9 @@ fun NeobrutalButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    val currentOffset by animateDpAsState(
-        targetValue = if (isPressed) 0.dp else shadowOffset,
-        animationSpec = tween(durationMillis = 80),
-        label = "shadow_offset"
-    )
-
     val translation by animateDpAsState(
         targetValue = if (isPressed) shadowOffset else 0.dp,
-        animationSpec = tween(durationMillis = 80),
+        animationSpec = tween(durationMillis = 60),
         label = "press_translation"
     )
 
@@ -107,53 +101,160 @@ fun NeobrutalButton(
 
     Box(
         modifier = modifier
-            .then(tagModifier)
-            .padding(end = shadowOffset, bottom = shadowOffset)
+            .then(tagModifier),
+        propagateMinConstraints = true
     ) {
-        // Shadow background
         Box(
             modifier = Modifier
-                .matchParentSize()
-                .offset(x = currentOffset, y = currentOffset)
-                .background(shadowColor)
-        )
-
-        // Button Surface with tactile translation
-        Box(
-            modifier = Modifier
-                .offset(x = translation, y = translation)
-                .background(if (enabled) containerColor else Color(0xFFD4D4D4))
-                .border(BorderStroke(borderWidth, borderColor))
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    enabled = enabled,
-                    onClick = onClick
-                )
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            contentAlignment = Alignment.Center
+                .padding(end = shadowOffset, bottom = shadowOffset),
+            propagateMinConstraints = true
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
+            // Shadow background matching exact container dimensions
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .offset(x = shadowOffset, y = shadowOffset)
+                    .background(shadowColor)
+            )
+
+            // Button Surface with tactile translation and matching parent bounds
+            Box(
+                modifier = Modifier
+                    .offset(x = translation, y = translation)
+                    .background(if (enabled) containerColor else Color(0xFFD4D4D4))
+                    .border(BorderStroke(borderWidth, borderColor))
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        enabled = enabled,
+                        onClick = onClick
+                    )
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center
             ) {
-                if (icon != null) {
-                    icon()
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    if (icon != null) {
+                        icon()
+                        if (text != null) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                    }
                     if (text != null) {
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = text.uppercase(),
+                            style = TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 14.sp,
+                                color = contentColor
+                            )
+                        )
                     }
                 }
-                if (text != null) {
-                    Text(
-                        text = text.uppercase(),
-                        style = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 14.sp,
-                            color = contentColor
-                        )
-                    )
-                }
+            }
+        }
+    }
+}
+
+@Composable
+fun NeobrutalSwitch(
+    checked: Boolean,
+    onCheckedChange: ((Boolean) -> Unit)?,
+    modifier: Modifier = Modifier,
+    activeColor: Color = NeobrutalGreen,
+    inactiveColor: Color = Color(0xFFE2E2D9),
+    thumbColor: Color = NeobrutalWhite,
+    borderColor: Color = NeobrutalBlack,
+    testTag: String? = null
+) {
+    val thumbOffset by animateDpAsState(
+        targetValue = if (checked) 24.dp else 2.dp,
+        animationSpec = tween(120),
+        label = "switch_thumb"
+    )
+    val clickModifier = if (onCheckedChange != null) {
+        Modifier.clickable { onCheckedChange(!checked) }
+    } else Modifier
+
+    val tagModifier = if (testTag != null) Modifier.testTag(testTag) else Modifier
+
+    Box(
+        modifier = modifier
+            .then(tagModifier)
+            .padding(end = 3.dp, bottom = 3.dp)
+            .then(clickModifier)
+    ) {
+        // Hard drop shadow
+        Box(
+            modifier = Modifier
+                .width(54.dp)
+                .height(30.dp)
+                .offset(x = 3.dp, y = 3.dp)
+                .background(NeobrutalBlack)
+        )
+        // Switch track
+        Box(
+            modifier = Modifier
+                .width(54.dp)
+                .height(30.dp)
+                .background(if (checked) activeColor else inactiveColor)
+                .border(BorderStroke(2.5.dp, borderColor)),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            // Square Brutalist Thumb
+            Box(
+                modifier = Modifier
+                    .offset(x = thumbOffset)
+                    .size(22.dp)
+                    .background(thumbColor)
+                    .border(BorderStroke(2.dp, borderColor))
+            )
+        }
+    }
+}
+
+@Composable
+fun NeobrutalRadioButton(
+    selected: Boolean,
+    onClick: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    activeColor: Color = NeobrutalYellow,
+    testTag: String? = null
+) {
+    val clickModifier = if (onClick != null) Modifier.clickable { onClick() } else Modifier
+    val tagModifier = if (testTag != null) Modifier.testTag(testTag) else Modifier
+
+    Box(
+        modifier = modifier
+            .then(tagModifier)
+            .padding(end = 2.dp, bottom = 2.dp)
+            .then(clickModifier)
+    ) {
+        // Hard drop shadow
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .offset(x = 2.dp, y = 2.dp)
+                .background(NeobrutalBlack)
+        )
+        // Outer square
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .background(NeobrutalWhite)
+                .border(BorderStroke(2.5.dp, NeobrutalBlack)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (selected) {
+                // Inner solid square
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(NeobrutalBlack)
+                )
             }
         }
     }

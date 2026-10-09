@@ -41,16 +41,21 @@ class BrutalDialApplication : Application() {
         telephonyService = TelephonyService(this)
 
         contactsRepository = ContactsRepository(this, database.contactDao())
-        callLogRepository = CallLogRepository(database.callLogDao())
+        callLogRepository = CallLogRepository(this, database.callLogDao())
         callBlockerService = CallBlockerService(database.blockedNumberDao(), preferences)
         callRecorderService = CallRecorderService(this, database.callRecordingDao())
         quickResponsesRepository = QuickResponsesRepository(database.quickResponseDao())
 
-        // Seed data in background
+        // Background startup sync and purge any leftover mock data
         CoroutineScope(Dispatchers.IO).launch {
-            contactsRepository.seedInitialDataIfEmpty()
-            callLogRepository.seedInitialLogsIfEmpty()
-            callBlockerService.seedInitialBlockedIfEmpty()
+            database.contactDao().deleteMockContacts()
+            database.callLogDao().deleteMockLogs()
+            if (contactsRepository.hasContactsPermission()) {
+                contactsRepository.syncDeviceContacts()
+            }
+            if (callLogRepository.hasCallLogPermission()) {
+                callLogRepository.syncDeviceCallLogs()
+            }
             quickResponsesRepository.seedDefaultsIfEmpty()
         }
     }

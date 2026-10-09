@@ -7,6 +7,16 @@ enum class CallState {
     DISCONNECTED
 }
 
+enum class CallStage {
+    DIALING,         // "Dialing..."
+    CONNECTING,      // "Connecting..."
+    RINGING,         // "Ringing..."
+    CONNECTED,       // "Connected"
+    ON_HOLD,         // "Call on Hold"
+    BUSY,            // "Line Busy"
+    ENDED            // "Call Ended"
+}
+
 enum class CallType {
     INCOMING,
     OUTGOING,

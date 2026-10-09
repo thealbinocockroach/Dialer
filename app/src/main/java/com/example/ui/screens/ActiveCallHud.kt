@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ActiveCallSession
+import com.example.data.model.CallStage
 import com.example.data.model.CallState
 import com.example.data.model.OverlayMode
 import com.example.ui.components.*
@@ -231,25 +232,39 @@ private fun FullScreenCallView(
                     )
                 )
 
-                // Call Timer Card
+                // Call Status & Timer Card
                 NeobrutalCard(
-                    modifier = Modifier.width(180.dp),
+                    modifier = Modifier.width(260.dp),
                     containerColor = NeobrutalWhite,
                     shadowOffset = 4.dp
                 ) {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 10.dp),
-                        contentAlignment = Alignment.Center
+                            .padding(vertical = 12.dp, horizontal = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        val (stageBadgeText, stageBadgeColor) = when (session.callStage) {
+                            CallStage.DIALING -> Pair("DIALING...", NeobrutalYellow)
+                            CallStage.CONNECTING -> Pair("CONNECTING...", NeobrutalCyan)
+                            CallStage.RINGING -> Pair("RINGING...", NeobrutalPink)
+                            CallStage.CONNECTED -> Pair("CONNECTED • HD", NeobrutalGreen)
+                            CallStage.ON_HOLD -> Pair("ON HOLD", NeobrutalOrange)
+                            CallStage.BUSY -> Pair("LINE BUSY", NeobrutalRed)
+                            CallStage.ENDED -> Pair("CALL ENDED", NeobrutalRed)
+                        }
+
+                        NeobrutalBadge(text = stageBadgeText, color = stageBadgeColor)
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
                         Text(
-                            text = if (session.callState == CallState.RINGING) "RINGING..." else durationFormatted,
+                            text = if (session.callStage == CallStage.CONNECTED) durationFormatted else session.statusText,
                             style = TextStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Black,
-                                fontSize = 24.sp,
-                                color = if (session.callState == CallState.RINGING) NeobrutalPink else NeobrutalBlack
+                                fontSize = if (session.callStage == CallStage.CONNECTED) 26.sp else 14.sp,
+                                color = NeobrutalBlack
                             )
                         )
                     }
@@ -562,7 +577,7 @@ private fun PopUpCallHud(
                             )
                         )
                         Text(
-                            text = if (session.callState == CallState.RINGING) "RINGING..." else durationFormatted,
+                            text = if (session.callStage == CallStage.CONNECTED) durationFormatted else session.statusText,
                             style = TextStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Black,
@@ -693,7 +708,7 @@ private fun MiniPopUpCallHud(
                             maxLines = 1
                         )
                         Text(
-                            text = if (session.callState == CallState.RINGING) "RINGING..." else durationFormatted,
+                            text = if (session.callStage == CallStage.CONNECTED) durationFormatted else session.statusText,
                             style = TextStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold,

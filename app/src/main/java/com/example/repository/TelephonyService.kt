@@ -15,6 +15,29 @@ class TelephonyService(private val context: Context) {
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
+    fun executeUssdOrCall(number: String): Boolean {
+        return try {
+            val encoded = Uri.encode(number)
+            val hasCallPermission = ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.CALL_PHONE
+            ) == PackageManager.PERMISSION_GRANTED
+
+            val intent = if (hasCallPermission) {
+                Intent(Intent.ACTION_CALL, Uri.parse("tel:$encoded"))
+            } else {
+                Intent(Intent.ACTION_DIAL, Uri.parse("tel:$encoded"))
+            }.apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e("TelephonyService", "Failed to execute call/USSD: ${e.message}")
+            false
+        }
+    }
+
     fun launchSystemDialer(phoneNumber: String, useDirectCallIfPermitted: Boolean = true) {
         val clean = Uri.encode(phoneNumber)
         val hasCallPermission = ContextCompat.checkSelfPermission(
