@@ -1,13 +1,19 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -29,6 +35,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.OverlayMode
 import com.example.ui.components.*
@@ -47,10 +54,34 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        try {
+            enableEdgeToEdge()
 
-        // Handle incoming dial intent
-        handleDialIntent(intent)
+            // Allow app to wake screen and show when locked or on top of other apps
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                try {
+                    setShowWhenLocked(true)
+                    setTurnScreenOn(true)
+                } catch (e: Throwable) {
+                    android.util.Log.w("MainActivity", "Lock screen display setup: ${e.message}")
+                }
+            }
+            @Suppress("DEPRECATION")
+            try {
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            } catch (e: Throwable) {
+                android.util.Log.w("MainActivity", "Window flags setup: ${e.message}")
+            }
+
+            // Handle incoming dial intent
+            handleDialIntent(intent)
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Error in onCreate", e)
+        }
 
         setContent {
             BrutalDialTheme {
@@ -61,42 +92,75 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Check permissions dynamically on resume
-        viewModel.updatePermissionStates()
+        try {
+            viewModel.setAppInForeground(true)
+            viewModel.updatePermissionStates()
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Error in onResume", e)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try {
+            viewModel.setAppInForeground(false)
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Error in onPause", e)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleDialIntent(intent)
+        try {
+            setIntent(intent)
+            handleDialIntent(intent)
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Error in onNewIntent", e)
+        }
     }
 
     private fun handleDialIntent(intent: Intent?) {
-        val uri = intent?.data
-        if (uri != null && uri.scheme == "tel") {
-            val schemeSpecific = uri.schemeSpecificPart
-            if (!schemeSpecific.isNullOrBlank()) {
-                viewModel.setDialedInput(schemeSpecific)
-                viewModel.selectTab(DialerTab.KEYPAD)
+        try {
+            val uri = intent?.data
+            if (uri != null && uri.scheme == "tel") {
+                val schemeSpecific = uri.schemeSpecificPart
+                if (!schemeSpecific.isNullOrBlank()) {
+                    viewModel.setDialedInput(schemeSpecific)
+                    viewModel.selectTab(DialerTab.KEYPAD)
+                }
             }
+
+            if (intent?.getBooleanExtra("EXTRA_INCOMING_CALL", false) == true) {
+                val incomingNum = intent.getStringExtra("EXTRA_INCOMING_NUMBER") ?: ""
+                if (incomingNum.isNotBlank()) {
+                    viewModel.onIncomingCallDetected(incomingNum)
+                }
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Error in handleDialIntent", e)
         }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Hardware volume key handler:
-        // Volume Up to answer incoming call
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            val active = viewModel.activeCall.value
-            if (active != null && active.callState == com.example.data.model.CallState.RINGING) {
-                viewModel.onHardwareVolumeUp()
-                return true
+        try {
+            // Hardware volume key handler:
+            // Volume Up to answer incoming call
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                val active = viewModel.activeCall.value
+                if (active != null && active.callState == com.example.data.model.CallState.RINGING) {
+                    viewModel.onHardwareVolumeUp()
+                    return true
+                }
             }
-        }
-        // Headset hook to end active call
-        if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK) {
-            if (viewModel.activeCall.value != null) {
-                viewModel.onHardwarePowerOrEnd()
-                return true
+            // Headset hook to end active call
+            if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK) {
+                if (viewModel.activeCall.value != null) {
+                    viewModel.onHardwarePowerOrEnd()
+                    return true
+                }
             }
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Error in onKeyDown", e)
         }
         return super.onKeyDown(keyCode, event)
     }
@@ -108,17 +172,75 @@ fun MainAppContent(viewModel: DialerViewModel) {
     val isSettingsOpen by viewModel.isSettingsOpen.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val activeCall by viewModel.activeCall.collectAsStateWithLifecycle()
+    val isDefaultDialer by viewModel.isDefaultDialer.collectAsStateWithLifecycle()
+    val canDrawOverlays by viewModel.canDrawOverlays.collectAsStateWithLifecycle()
+    val hasContactsPermission by viewModel.hasContactsPermission.collectAsStateWithLifecycle()
+    val hasCallLogPermission by viewModel.hasCallLogPermission.collectAsStateWithLifecycle()
+
+    val permissionsToRequest = remember {
+        val list = mutableListOf(
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.READ_CALL_LOG,
+            Manifest.permission.WRITE_CALL_LOG,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.WRITE_CONTACTS,
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.SEND_SMS
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            list.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            list.add(Manifest.permission.ANSWER_PHONE_CALLS)
+        }
+        list.toTypedArray()
+    }
+
+    val permissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val allGranted = results.values.all { it }
+        viewModel.onPermissionsBatchResult(allGranted)
+    }
+
+    val defaultDialerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        viewModel.updatePermissionStates()
+    }
+
+    // Every permission required from a phone app is asked on start up
+    LaunchedEffect(Unit) {
+        try {
+            val anyMissing = permissionsToRequest.any { perm ->
+                ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED
+            }
+            if (anyMissing) {
+                permissionsLauncher.launch(permissionsToRequest)
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Permission launch error: ${e.message}")
+        }
+    }
 
     // Listen to toasts
     LaunchedEffect(Unit) {
         viewModel.toastMessage.collectLatest { msg ->
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            try {
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            } catch (_: Throwable) {}
         }
     }
 
     // Handle back button when Settings is open
     BackHandler(enabled = isSettingsOpen) {
         viewModel.closeSettings()
+    }
+
+    // Handle back button when Keypad is open (returns to Recents)
+    BackHandler(enabled = !isSettingsOpen && currentTab == DialerTab.KEYPAD) {
+        viewModel.selectTab(DialerTab.RECENTS)
     }
 
     if (isSettingsOpen) {
@@ -137,8 +259,8 @@ fun MainAppContent(viewModel: DialerViewModel) {
                 .statusBarsPadding(),
             containerColor = NeobrutalBgLight,
             bottomBar = {
-                if (!isFullScreenCall) {
-                    // 3 Clean Tabs: Recents, Keypad, Contacts
+                // There shouldn't be a keypad bar: only Recents and Contacts tabs when not on Keypad
+                if (!isFullScreenCall && currentTab != DialerTab.KEYPAD) {
                     CleanBottomNav(
                         selectedTab = currentTab,
                         onSelectTab = { viewModel.selectTab(it) }
@@ -151,10 +273,69 @@ fun MainAppContent(viewModel: DialerViewModel) {
                     .fillMaxSize()
                     .padding(if (isFullScreenCall) PaddingValues(0.dp) else innerPadding)
             ) {
-                when (currentTab) {
-                    DialerTab.RECENTS -> RecentsScreen(viewModel = viewModel)
-                    DialerTab.KEYPAD -> KeypadScreen(viewModel = viewModel)
-                    DialerTab.CONTACTS -> ContactsScreen(viewModel = viewModel)
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Default phone app & permissions prompt banner if action required
+                    if (!isFullScreenCall && (!isDefaultDialer || !hasContactsPermission || !hasCallLogPermission || !canDrawOverlays)) {
+                        DefaultPhoneAppBanner(
+                            isDefaultDialer = isDefaultDialer,
+                            hasMissingPermissions = !hasContactsPermission || !hasCallLogPermission,
+                            canDrawOverlays = canDrawOverlays,
+                            onSetDefault = {
+                                try {
+                                    val intent = viewModel.getDefaultDialerIntent()
+                                    if (intent != null) {
+                                        defaultDialerLauncher.launch(intent)
+                                    } else {
+                                        viewModel.updatePermissionStates()
+                                    }
+                                } catch (e: Throwable) {
+                                    android.util.Log.e("MainActivity", "Failed to launch default dialer intent: ${e.message}")
+                                }
+                            },
+                            onGrantPermissions = {
+                                try {
+                                    permissionsLauncher.launch(permissionsToRequest)
+                                } catch (e: Throwable) {
+                                    android.util.Log.e("MainActivity", "Failed to launch permissions request: ${e.message}")
+                                }
+                            },
+                            onEnableOverlay = {
+                                try {
+                                    val intent = viewModel.getOverlaySettingsIntent()
+                                    context.startActivity(intent)
+                                } catch (e: Throwable) {
+                                    android.util.Log.e("MainActivity", "Failed to launch overlay settings: ${e.message}")
+                                    try {
+                                        val fallback = Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+                                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                        }
+                                        context.startActivity(fallback)
+                                    } catch (_: Throwable) {}
+                                }
+                            }
+                        )
+                    }
+
+                    Box(modifier = Modifier.weight(1f)) {
+                        when (currentTab) {
+                            DialerTab.RECENTS -> RecentsScreen(viewModel = viewModel)
+                            DialerTab.KEYPAD -> KeypadScreen(viewModel = viewModel)
+                            DialerTab.CONTACTS -> ContactsScreen(viewModel = viewModel)
+                        }
+                    }
+                }
+
+                // Floating Keypad Button that opens the Keypad (when on Recents or Contacts)
+                if (!isFullScreenCall && currentTab != DialerTab.KEYPAD) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 20.dp, bottom = 20.dp)
+                    ) {
+                        NeobrutalFloatingKeypadButton(
+                            onClick = { viewModel.selectTab(DialerTab.KEYPAD) }
+                        )
+                    }
                 }
 
                 // Clean Floating Settings Button at Top Right without any black row (only when not in full screen call)
@@ -265,6 +446,121 @@ fun MainAppContent(viewModel: DialerViewModel) {
 }
 
 @Composable
+fun DefaultPhoneAppBanner(
+    isDefaultDialer: Boolean,
+    hasMissingPermissions: Boolean,
+    canDrawOverlays: Boolean,
+    onSetDefault: () -> Unit,
+    onGrantPermissions: () -> Unit,
+    onEnableOverlay: () -> Unit
+) {
+    NeobrutalCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        containerColor = NeobrutalYellow,
+        shadowOffset = 3.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.PhoneInTalk,
+                        contentDescription = null,
+                        tint = NeobrutalBlack,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = when {
+                            !isDefaultDialer -> "DEFAULT PHONE APP SETUP"
+                            !canDrawOverlays -> "ENABLE ON OTHER APPS"
+                            else -> "PERMISSIONS REQUIRED"
+                        },
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 13.sp,
+                            color = NeobrutalBlack
+                        )
+                    )
+                }
+
+                NeobrutalBadge(
+                    text = when {
+                        !isDefaultDialer -> "DEFAULT DIALER"
+                        !canDrawOverlays -> "OVERLAY"
+                        else -> "PERMISSIONS"
+                    },
+                    color = NeobrutalPink
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = when {
+                    !isDefaultDialer -> "Set Brutal Dial as your default phone app to handle all calls, audio recording, and spam protection."
+                    !canDrawOverlays -> "Allow 'Display over other apps' so Brutal Dial immediately opens and shows who's calling while you are using any other app."
+                    else -> "Grant phone, call log, audio, and contacts permissions for full dialer features."
+                },
+                style = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = NeobrutalBlack
+                )
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (!isDefaultDialer) {
+                    NeobrutalButton(
+                        onClick = onSetDefault,
+                        modifier = Modifier.weight(1f).height(38.dp),
+                        text = "SET AS DEFAULT",
+                        containerColor = NeobrutalCyan,
+                        shadowOffset = 2.dp,
+                        testTag = "set_as_default_dialer_btn"
+                    )
+                }
+                if (!canDrawOverlays) {
+                    NeobrutalButton(
+                        onClick = onEnableOverlay,
+                        modifier = Modifier.weight(1f).height(38.dp),
+                        text = "ALLOW ON OTHER APPS",
+                        containerColor = NeobrutalPink,
+                        shadowOffset = 2.dp,
+                        testTag = "enable_overlay_btn"
+                    )
+                }
+                if (hasMissingPermissions) {
+                    NeobrutalButton(
+                        onClick = onGrantPermissions,
+                        modifier = Modifier.weight(1f).height(38.dp),
+                        text = "PERMISSIONS",
+                        containerColor = NeobrutalGreen,
+                        shadowOffset = 2.dp,
+                        testTag = "grant_all_permissions_btn"
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun CleanBottomNav(
     selectedTab: DialerTab,
     onSelectTab: (DialerTab) -> Unit
@@ -282,7 +578,7 @@ fun CleanBottomNav(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(NeobrutalWhite)
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceAround
         ) {
             NavTabItem(
@@ -292,14 +588,6 @@ fun CleanBottomNav(
                 accentColor = NeobrutalCyan,
                 onClick = { onSelectTab(DialerTab.RECENTS) },
                 testTag = "nav_recents"
-            )
-            NavTabItem(
-                title = "KEYPAD",
-                icon = Icons.Default.Dialpad,
-                isSelected = selectedTab == DialerTab.KEYPAD,
-                accentColor = NeobrutalGreen,
-                onClick = { onSelectTab(DialerTab.KEYPAD) },
-                testTag = "nav_keypad"
             )
             NavTabItem(
                 title = "CONTACTS",

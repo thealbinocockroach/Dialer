@@ -1,6 +1,7 @@
 package com.example.t9
 
 import com.example.data.model.ContactEntity
+import java.util.concurrent.ConcurrentHashMap
 
 data class T9MatchResult(
     val contact: ContactEntity,
@@ -11,7 +12,7 @@ data class T9MatchResult(
 
 object T9SearchEngine {
 
-    private val CHAR_TO_DIGIT = HashMap<Char, Char>().apply {
+    private val CHAR_TO_DIGIT = HashMap<Char, Char>(32).apply {
         put('a', '2'); put('b', '2'); put('c', '2')
         put('d', '3'); put('e', '3'); put('f', '3')
         put('g', '4'); put('h', '4'); put('i', '4')
@@ -22,26 +23,38 @@ object T9SearchEngine {
         put('w', '9'); put('x', '9'); put('y', '9'); put('z', '9')
     }
 
+    // High performance cache so typing in T9 doesn't re-allocate or re-parse on every keystroke
+    private val nameDigitsCache = ConcurrentHashMap<String, String>()
+    private val cleanNumberCache = ConcurrentHashMap<String, String>()
+
     /**
-     * Converts a string name into a sequence of T9 digits. Non-alphabetic chars keep their char or ' '
+     * Converts a string name into a sequence of T9 digits. Cached for ultra-smooth performance.
      */
     fun nameToDigits(name: String): String {
-        val sb = StringBuilder(name.length)
-        for (ch in name.lowercase()) {
-            val digit = CHAR_TO_DIGIT[ch]
-            if (digit != null) {
-                sb.append(digit)
-            } else if (ch.isDigit()) {
-                sb.append(ch)
-            } else {
-                sb.append(' ')
+        return nameDigitsCache.computeIfAbsent(name) { rawName ->
+            val sb = StringBuilder(rawName.length)
+            for (ch in rawName.lowercase()) {
+                val digit = CHAR_TO_DIGIT[ch]
+                if (digit != null) {
+                    sb.append(digit)
+                } else if (ch.isDigit()) {
+                    sb.append(ch)
+                } else {
+                    sb.append(' ')
+                }
             }
+            sb.toString()
         }
-        return sb.toString()
+    }
+
+    private fun getCleanNumber(number: String): String {
+        return cleanNumberCache.computeIfAbsent(number) { raw ->
+            raw.filter { it.isDigit() }
+        }
     }
 
     /**
-     * Filters and ranks contacts based on typed T9 digits query.
+     * Filters and ranks contacts based on typed T9 digits query with zero lag.
      */
     fun search(contacts: List<ContactEntity>, query: String): List<T9MatchResult> {
         if (query.isEmpty() || query.contains('*') || query.contains('#')) {
@@ -52,11 +65,11 @@ object T9SearchEngine {
             return emptyList()
         }
 
-        val results = mutableListOf<T9MatchResult>()
+        val results = ArrayList<T9MatchResult>(16)
 
         for (contact in contacts) {
             val nameDigits = nameToDigits(contact.displayName)
-            val cleanNumber = contact.phoneNumber.filter { it.isDigit() }
+            val cleanNumber = getCleanNumber(contact.phoneNumber)
 
             // 1. Check Name T9 Match
             val nameIdx = nameDigits.indexOf(cleanQuery)
@@ -67,7 +80,6 @@ object T9SearchEngine {
             if (nameIdx >= 0) {
                 matchedByName = true
                 matchedRange = nameIdx until (nameIdx + cleanQuery.length)
-                // Score boosts
                 score = when {
                     nameIdx == 0 -> 1000 // Exact name prefix
                     nameDigits.getOrNull(nameIdx - 1) == ' ' -> 800 // Word boundary prefix
@@ -87,7 +99,6 @@ object T9SearchEngine {
             }
 
             if (score > 0) {
-                // Add frequency bonus
                 val totalScore = score + (contact.callCount * 10) + (if (contact.isStarred) 50 else 0)
                 results.add(
                     T9MatchResult(
@@ -100,6 +111,12 @@ object T9SearchEngine {
             }
         }
 
-        return results.sortedByDescending { it.score }
+        results.sortByDescending { it.score }
+        return results
+    }
+
+    fun clearCache() {
+        nameDigitsCache.clear()
+        cleanNumberCache.clear()
     }
 }

@@ -60,67 +60,85 @@ class CallLogRepository(
     }
 
     suspend fun syncDeviceCallLogs(): Int = withContext(Dispatchers.IO) {
-        if (!hasCallLogPermission()) return@withContext 0
+        try {
+            if (!hasCallLogPermission()) return@withContext 0
 
-        val resolver: ContentResolver = context.contentResolver
-        val projection = arrayOf(
-            CallLog.Calls.NUMBER,
-            CallLog.Calls.CACHED_NAME,
-            CallLog.Calls.TYPE,
-            CallLog.Calls.DATE,
-            CallLog.Calls.DURATION
-        )
+            val resolver: ContentResolver = context.contentResolver
+            val projection = arrayOf(
+                CallLog.Calls.NUMBER,
+                CallLog.Calls.CACHED_NAME,
+                CallLog.Calls.TYPE,
+                CallLog.Calls.DATE,
+                CallLog.Calls.DURATION
+            )
 
-        val cursor = resolver.query(
-            CallLog.Calls.CONTENT_URI,
-            projection,
-            null,
-            null,
-            CallLog.Calls.DATE + " DESC"
-        )
-
-        var synced = 0
-        cursor?.use {
-            val numCol = it.getColumnIndex(CallLog.Calls.NUMBER)
-            val nameCol = it.getColumnIndex(CallLog.Calls.CACHED_NAME)
-            val typeCol = it.getColumnIndex(CallLog.Calls.TYPE)
-            val dateCol = it.getColumnIndex(CallLog.Calls.DATE)
-            val durCol = it.getColumnIndex(CallLog.Calls.DURATION)
-
-            val logs = mutableListOf<CallLogEntity>()
-            while (it.moveToNext() && logs.size < 100) {
-                val num = if (numCol >= 0) it.getString(numCol) ?: "Unknown" else "Unknown"
-                val name = if (nameCol >= 0) it.getString(nameCol) ?: "" else ""
-                val typeInt = if (typeCol >= 0) it.getInt(typeCol) else CallLog.Calls.INCOMING_TYPE
-                val date = if (dateCol >= 0) it.getLong(dateCol) else System.currentTimeMillis()
-                val dur = if (durCol >= 0) it.getInt(durCol) else 0
-
-                val callType = when (typeInt) {
-                    CallLog.Calls.OUTGOING_TYPE -> CallType.OUTGOING
-                    CallLog.Calls.MISSED_TYPE -> CallType.MISSED
-                    CallLog.Calls.BLOCKED_TYPE, CallLog.Calls.REJECTED_TYPE -> CallType.BLOCKED
-                    else -> CallType.INCOMING
-                }
-
-                logs.add(
-                    CallLogEntity(
-                        number = num,
-                        cachedName = name,
-                        callType = callType,
-                        timestamp = date,
-                        durationSeconds = dur
-                    )
+            val cursor = try {
+                resolver.query(
+                    CallLog.Calls.CONTENT_URI,
+                    projection,
+                    null,
+                    null,
+                    CallLog.Calls.DATE + " DESC"
                 )
+            } catch (e: Throwable) {
+                android.util.Log.e("CallLogRepository", "Failed to query CallLog Provider: ${e.message}", e)
+                null
             }
 
-            if (logs.isNotEmpty()) {
-                callLogDao.clearAll() // replace with real logs
-                for (log in logs) {
-                    callLogDao.insert(log)
+            var synced = 0
+            cursor?.use {
+                val numCol = it.getColumnIndex(CallLog.Calls.NUMBER)
+                val nameCol = it.getColumnIndex(CallLog.Calls.CACHED_NAME)
+                val typeCol = it.getColumnIndex(CallLog.Calls.TYPE)
+                val dateCol = it.getColumnIndex(CallLog.Calls.DATE)
+                val durCol = it.getColumnIndex(CallLog.Calls.DURATION)
+
+                val logs = mutableListOf<CallLogEntity>()
+                while (it.moveToNext() && logs.size < 500) {
+                    try {
+                        val num = if (numCol >= 0) it.getString(numCol) ?: "Unknown" else "Unknown"
+                        val name = if (nameCol >= 0) it.getString(nameCol) ?: "" else ""
+                        val typeInt = if (typeCol >= 0) {
+                            try { it.getInt(typeCol) } catch (_: Throwable) { CallLog.Calls.INCOMING_TYPE }
+                        } else CallLog.Calls.INCOMING_TYPE
+                        val date = if (dateCol >= 0) {
+                            try { it.getLong(dateCol) } catch (_: Throwable) { System.currentTimeMillis() }
+                        } else System.currentTimeMillis()
+                        val dur = if (durCol >= 0) {
+                            try { it.getInt(durCol) } catch (_: Throwable) { 0 }
+                        } else 0
+
+                        val callType = when (typeInt) {
+                            CallLog.Calls.OUTGOING_TYPE -> CallType.OUTGOING
+                            CallLog.Calls.MISSED_TYPE -> CallType.MISSED
+                            CallLog.Calls.BLOCKED_TYPE, CallLog.Calls.REJECTED_TYPE -> CallType.BLOCKED
+                            else -> CallType.INCOMING
+                        }
+
+                        logs.add(
+                            CallLogEntity(
+                                number = num,
+                                cachedName = name,
+                                callType = callType,
+                                timestamp = date,
+                                durationSeconds = dur
+                            )
+                        )
+                    } catch (rowEx: Throwable) {
+                        // Skip corrupted log row
+                    }
                 }
-                synced = logs.size
+
+                if (logs.isNotEmpty()) {
+                    callLogDao.clearAll() // replace with real logs
+                    callLogDao.insertAll(logs)
+                    synced = logs.size
+                }
             }
+            synced
+        } catch (t: Throwable) {
+            android.util.Log.e("CallLogRepository", "Error in syncDeviceCallLogs: ${t.message}", t)
+            0
         }
-        synced
     }
 }

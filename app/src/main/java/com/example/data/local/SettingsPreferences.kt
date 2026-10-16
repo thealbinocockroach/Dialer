@@ -239,4 +239,112 @@ class SettingsPreferences(context: Context) {
         prefs.edit().putBoolean("flip_to_silence", enabled).apply()
         _flipToSilence.value = enabled
     }
+
+    // Call Recording Settings
+    private val _autoRecordCalls = MutableStateFlow(prefs.getBoolean("auto_record_calls", false))
+    val autoRecordCalls: StateFlow<Boolean> = _autoRecordCalls.asStateFlow()
+
+    fun setAutoRecordCalls(enabled: Boolean) {
+        prefs.edit().putBoolean("auto_record_calls", enabled).apply()
+        _autoRecordCalls.value = enabled
+    }
+
+    private val _recordUnknownOnly = MutableStateFlow(prefs.getBoolean("record_unknown_only", false))
+    val recordUnknownOnly: StateFlow<Boolean> = _recordUnknownOnly.asStateFlow()
+
+    fun setRecordUnknownOnly(enabled: Boolean) {
+        prefs.edit().putBoolean("record_unknown_only", enabled).apply()
+        _recordUnknownOnly.value = enabled
+    }
+
+    private val _recordingQuality = MutableStateFlow(prefs.getString("recording_quality", "High Quality (128kbps AAC)") ?: "High Quality (128kbps AAC)")
+    val recordingQuality: StateFlow<String> = _recordingQuality.asStateFlow()
+
+    fun setRecordingQuality(quality: String) {
+        prefs.edit().putString("recording_quality", quality).apply()
+        _recordingQuality.value = quality
+    }
+
+    // Caller ID & Spam Filter
+    private val _callerIdSpamFilter = MutableStateFlow(prefs.getBoolean("caller_id_spam_filter", true))
+    val callerIdSpamFilter: StateFlow<Boolean> = _callerIdSpamFilter.asStateFlow()
+
+    fun setCallerIdSpamFilter(enabled: Boolean) {
+        prefs.edit().putBoolean("caller_id_spam_filter", enabled).apply()
+        _callerIdSpamFilter.value = enabled
+    }
+
+    private val _blockSpamCalls = MutableStateFlow(prefs.getBoolean("block_spam_calls", false))
+    val blockSpamCalls: StateFlow<Boolean> = _blockSpamCalls.asStateFlow()
+
+    fun setBlockSpamCalls(enabled: Boolean) {
+        prefs.edit().putBoolean("block_spam_calls", enabled).apply()
+        _blockSpamCalls.value = enabled
+    }
+
+    private val _verifiedCalls = MutableStateFlow(prefs.getBoolean("verified_calls", true))
+    val verifiedCalls: StateFlow<Boolean> = _verifiedCalls.asStateFlow()
+
+    fun setVerifiedCalls(enabled: Boolean) {
+        prefs.edit().putBoolean("verified_calls", enabled).apply()
+        _verifiedCalls.value = enabled
+    }
+
+    // Hardware & Vibration Behaviors
+    private val _powerButtonEndsCall = MutableStateFlow(prefs.getBoolean("power_button_ends_call", false))
+    val powerButtonEndsCall: StateFlow<Boolean> = _powerButtonEndsCall.asStateFlow()
+
+    fun setPowerButtonEndsCall(enabled: Boolean) {
+        prefs.edit().putBoolean("power_button_ends_call", enabled).apply()
+        _powerButtonEndsCall.value = enabled
+    }
+
+    private val _volumeKeyAnswersCall = MutableStateFlow(prefs.getBoolean("volume_key_answers_call", true))
+    val volumeKeyAnswersCall: StateFlow<Boolean> = _volumeKeyAnswersCall.asStateFlow()
+
+    fun setVolumeKeyAnswersCall(enabled: Boolean) {
+        prefs.edit().putBoolean("volume_key_answers_call", enabled).apply()
+        _volumeKeyAnswersCall.value = enabled
+    }
+
+    private val _vibrateOnConnect = MutableStateFlow(prefs.getBoolean("vibrate_on_connect", true))
+    val vibrateOnConnect: StateFlow<Boolean> = _vibrateOnConnect.asStateFlow()
+
+    fun setVibrateOnConnect(enabled: Boolean) {
+        prefs.edit().putBoolean("vibrate_on_connect", enabled).apply()
+        _vibrateOnConnect.value = enabled
+    }
+
+    private val _vibrateOnDisconnect = MutableStateFlow(prefs.getBoolean("vibrate_on_disconnect", true))
+    val vibrateOnDisconnect: StateFlow<Boolean> = _vibrateOnDisconnect.asStateFlow()
+
+    fun setVibrateOnDisconnect(enabled: Boolean) {
+        prefs.edit().putBoolean("vibrate_on_disconnect", enabled).apply()
+        _vibrateOnDisconnect.value = enabled
+    }
+
+    private val _dialpadHapticStrength = MutableStateFlow(prefs.getString("dialpad_haptic_strength", "Strong (Neobrutal)") ?: "Strong (Neobrutal)")
+    val dialpadHapticStrength: StateFlow<String> = _dialpadHapticStrength.asStateFlow()
+
+    fun setDialpadHapticStrength(strength: String) {
+        prefs.edit().putString("dialpad_haptic_strength", strength).apply()
+        _dialpadHapticStrength.value = strength
+    }
+
+    // SIP VoIP
+    private val _sipCallingEnabled = MutableStateFlow(prefs.getBoolean("sip_calling_enabled", false))
+    val sipCallingEnabled: StateFlow<Boolean> = _sipCallingEnabled.asStateFlow()
+
+    fun setSipCallingEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("sip_calling_enabled", enabled).apply()
+        _sipCallingEnabled.value = enabled
+    }
+
+    private val _receiveSipCalls = MutableStateFlow(prefs.getBoolean("receive_sip_calls", false))
+    val receiveSipCalls: StateFlow<Boolean> = _receiveSipCalls.asStateFlow()
+
+    fun setReceiveSipCalls(enabled: Boolean) {
+        prefs.edit().putBoolean("receive_sip_calls", enabled).apply()
+        _receiveSipCalls.value = enabled
+    }
 }

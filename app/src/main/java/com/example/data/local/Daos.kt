@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ContactDao {
-    @Query("SELECT * FROM contacts ORDER BY displayName ASC")
+    @Query("SELECT * FROM contacts GROUP BY LOWER(TRIM(displayName)) ORDER BY displayName ASC")
     fun getAllContacts(): Flow<List<ContactEntity>>
 
     @Query("SELECT * FROM contacts WHERE speedDialDigit IS NOT NULL ORDER BY speedDialDigit ASC")
@@ -15,7 +15,7 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE speedDialDigit = :digit LIMIT 1")
     suspend fun getBySpeedDialDigit(digit: Int): ContactEntity?
 
-    @Query("SELECT * FROM contacts ORDER BY callCount DESC, lastContactedTimestamp DESC LIMIT :limit")
+    @Query("SELECT * FROM contacts GROUP BY LOWER(TRIM(displayName)) ORDER BY callCount DESC, lastContactedTimestamp DESC LIMIT :limit")
     fun getFrequentlyContacted(limit: Int = 8): Flow<List<ContactEntity>>
 
     @Query("SELECT * FROM contacts WHERE normalizedNumber = :normalizedNumber OR phoneNumber = :number LIMIT 1")
@@ -50,6 +50,9 @@ interface ContactDao {
 
     @Query("DELETE FROM contacts WHERE lookupKey = '' OR lookupKey IS NULL OR displayName IN ('Alex Vance', 'Brutalist Dispatch', 'Elena Rostova', 'Kai Tanaka', 'Marcus Brody', 'Nova Sterling', 'Samir Patel', 'Zara O''Connor')")
     suspend fun deleteMockContacts()
+
+    @Query("DELETE FROM contacts WHERE id NOT IN (SELECT MIN(id) FROM contacts GROUP BY LOWER(TRIM(displayName)))")
+    suspend fun deleteDuplicateContacts()
 }
 
 @Dao
@@ -62,6 +65,9 @@ interface CallLogDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(callLog: CallLogEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(logs: List<CallLogEntity>)
 
     @Update
     suspend fun update(callLog: CallLogEntity)

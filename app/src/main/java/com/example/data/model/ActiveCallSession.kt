@@ -1,5 +1,12 @@
 package com.example.data.model
 
+data class CallWaitingInfo(
+    val callId: String = "",
+    val number: String,
+    val callerName: String = "",
+    val contactInitials: String = "?"
+)
+
 data class ActiveCallSession(
     val callId: String = "",
     val number: String,
@@ -19,5 +26,8 @@ data class ActiveCallSession(
     val recordingFilePath: String? = null,
     val overlayMode: OverlayMode = OverlayMode.FULL_SCREEN,
     val isBlocked: Boolean = false,
-    val startTimeMillis: Long = System.currentTimeMillis()
+    val startTimeMillis: Long = System.currentTimeMillis(),
+    val callWaiting: CallWaitingInfo? = null,
+    val isConference: Boolean = false,
+    val heldCall: CallWaitingInfo? = null
 )

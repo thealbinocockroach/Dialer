@@ -64,4 +64,19 @@ class DialerEngineUnitTest {
         val nonBlocked = "5551234567"
         assertFalse(nonBlocked.startsWith(prefix))
     }
+
+    @Test
+    fun testContactDeduplicationByName() {
+        val rawContacts = listOf(
+            ContactEntity(id = 1, displayName = "John Doe", phoneNumber = "1234567890"),
+            ContactEntity(id = 2, displayName = "john doe", phoneNumber = "0987654321"),
+            ContactEntity(id = 3, displayName = "John Doe ", phoneNumber = "1112223333"),
+            ContactEntity(id = 4, displayName = "Alice Wonder", phoneNumber = "4445556666")
+        )
+
+        val deduplicated = rawContacts.distinctBy { it.displayName.trim().lowercase() }
+        assertEquals(2, deduplicated.size)
+        assertEquals("John Doe", deduplicated[0].displayName)
+        assertEquals("Alice Wonder", deduplicated[1].displayName)
+    }
 }

@@ -1,5 +1,13 @@
 package com.example.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.PowerManager
+import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
@@ -17,12 +25,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.ContactEntity
 import com.example.data.model.ActiveCallSession
 import com.example.data.model.CallStage
 import com.example.data.model.CallState
@@ -39,66 +50,177 @@ fun ActiveCallContainer(
 ) {
     val activeCall by viewModel.activeCall.collectAsState()
     val quickResponses by viewModel.quickResponses.collectAsState()
+    val frequentContacts by viewModel.frequentlyContacted.collectAsState()
     var showQuickDeclineSheet by remember { mutableStateOf(false) }
     var showInCallKeypad by remember { mutableStateOf(false) }
+    var showAddCallDialog by remember { mutableStateOf(false) }
 
     if (activeCall == null) return
 
     val session = activeCall!!
+    val context = LocalContext.current
+    var isNearEar by remember { mutableStateOf(false) }
 
-    when (session.overlayMode) {
-        OverlayMode.FULL_SCREEN -> {
-            FullScreenCallView(
-                session = session,
-                onAnswer = { viewModel.answerCall() },
-                onEndCall = { viewModel.endCall() },
-                onToggleMute = { viewModel.toggleMute() },
-                onToggleSpeaker = { viewModel.toggleSpeaker() },
-                onToggleHold = { viewModel.toggleHold() },
-                onToggleRecord = { viewModel.toggleCallRecording() },
-                onSwitchMode = { mode -> viewModel.setOverlayMode(mode) },
-                onOpenQuickDecline = { showQuickDeclineSheet = true },
-                onOpenKeypad = { showInCallKeypad = !showInCallKeypad }
-            )
-        }
-        OverlayMode.POP_UP -> {
-            PopUpCallHud(
-                session = session,
-                onAnswer = { viewModel.answerCall() },
-                onDecline = { viewModel.declineCall() },
-                onEndCall = { viewModel.endCall() },
-                onExpand = { viewModel.setOverlayMode(OverlayMode.FULL_SCREEN) },
-                onMini = { viewModel.setOverlayMode(OverlayMode.MINI_POP_UP) },
-                onOpenQuickDecline = { showQuickDeclineSheet = true }
-            )
-        }
-        OverlayMode.MINI_POP_UP -> {
-            MiniPopUpCallHud(
-                session = session,
-                onEndCall = { viewModel.endCall() },
-                onExpand = { viewModel.setOverlayMode(OverlayMode.FULL_SCREEN) }
-            )
-        }
-    }
+    // Proximity sensor listener & PowerManager wake lock for in-call ear detection
+    DisposableEffect(activeCall != null) {
+        val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        val proximitySensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
 
-    // Quick Decline Bottom Sheet
-    if (showQuickDeclineSheet) {
-        QuickDeclineDrawer(
-            responses = quickResponses.map { it.text },
-            onDismiss = { showQuickDeclineSheet = false },
-            onSelect = { text ->
-                showQuickDeclineSheet = false
-                viewModel.quickDeclineCall(text)
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val wakeLock = try {
+            if (powerManager?.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK) == true) {
+                powerManager.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "BrutalDial:InCallProximity")
+            } else null
+        } catch (_: Exception) { null }
+
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                if (event.sensor.type == Sensor.TYPE_PROXIMITY) {
+                    val distance = event.values.firstOrNull() ?: 5f
+                    val maxRange = proximitySensor?.maximumRange ?: 5f
+                    val near = distance < maxRange && distance < 5.0f
+                    isNearEar = near
+                    try {
+                        if (near) {
+                            if (wakeLock?.isHeld == false) wakeLock.acquire(15 * 60 * 1000L)
+                        } else {
+                            if (wakeLock?.isHeld == true) wakeLock.release()
+                        }
+                    } catch (_: Exception) {}
+                }
             }
-        )
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+
+        if (proximitySensor != null) {
+            sensorManager.registerListener(listener, proximitySensor, SensorManager.SENSOR_DELAY_UI)
+        }
+
+        onDispose {
+            try {
+                if (proximitySensor != null) {
+                    sensorManager?.unregisterListener(listener)
+                }
+                if (wakeLock?.isHeld == true) {
+                    wakeLock.release()
+                }
+            } catch (_: Exception) {}
+            isNearEar = false
+        }
     }
 
-    // In-call Keypad Dialog
-    if (showInCallKeypad) {
-        InCallKeypadDialog(
-            onDismiss = { showInCallKeypad = false },
-            onDigit = { digit -> viewModel.appendDigit(digit) }
-        )
+    // Dynamic screen brightness dimming when phone is held to ear
+    val activity = context as? Activity
+    DisposableEffect(isNearEar) {
+        if (isNearEar) {
+            activity?.window?.attributes = activity?.window?.attributes?.apply {
+                screenBrightness = 0.0f
+            }
+        } else {
+            activity?.window?.attributes = activity?.window?.attributes?.apply {
+                screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            }
+        }
+        onDispose {
+            activity?.window?.attributes = activity?.window?.attributes?.apply {
+                screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            }
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        when (session.overlayMode) {
+            OverlayMode.FULL_SCREEN -> {
+                FullScreenCallView(
+                    session = session,
+                    onAnswer = { viewModel.answerCall() },
+                    onEndCall = { viewModel.endCall() },
+                    onToggleMute = { viewModel.toggleMute() },
+                    onToggleSpeaker = { viewModel.toggleSpeaker() },
+                    onToggleHold = { viewModel.toggleHold() },
+                    onToggleRecord = { viewModel.toggleCallRecording() },
+                    onAddCall = { showAddCallDialog = true },
+                    onEndCurrentAndAnswer = { viewModel.endCurrentAndAnswer() },
+                    onHoldCurrentAndAnswer = { viewModel.holdCurrentAndAnswer() },
+                    onMergeWaitingCall = { viewModel.mergeWaitingCall() },
+                    onDeclineWaiting = { viewModel.declineWaitingCall() },
+                    onSwapCalls = { viewModel.swapCalls() },
+                    onMergeHeldCall = { viewModel.mergeHeldCall() },
+                    onOpenKeypad = { showInCallKeypad = !showInCallKeypad },
+                    onOpenQuickDecline = { showQuickDeclineSheet = true }
+                )
+            }
+            OverlayMode.POP_UP -> {
+                PopUpCallHud(
+                    session = session,
+                    onAnswer = { viewModel.answerCall() },
+                    onDecline = { viewModel.declineCall() },
+                    onEndCall = { viewModel.endCall() },
+                    onExpand = { viewModel.setOverlayMode(OverlayMode.FULL_SCREEN) },
+                    onEndCurrentAndAnswer = { viewModel.endCurrentAndAnswer() },
+                    onHoldCurrentAndAnswer = { viewModel.holdCurrentAndAnswer() },
+                    onMergeWaitingCall = { viewModel.mergeWaitingCall() },
+                    onDeclineWaiting = { viewModel.declineWaitingCall() },
+                    onOpenQuickDecline = { showQuickDeclineSheet = true }
+                )
+            }
+            OverlayMode.MINI_POP_UP -> {
+                MiniPopUpCallHud(
+                    session = session,
+                    onEndCall = { viewModel.endCall() },
+                    onExpand = { viewModel.setOverlayMode(OverlayMode.FULL_SCREEN) }
+                )
+            }
+        }
+
+        // Add Another Call Dialog
+        if (showAddCallDialog) {
+            AddCallDialog(
+                frequentContacts = frequentContacts,
+                onDismiss = { showAddCallDialog = false },
+                onPlaceCall = { number ->
+                    showAddCallDialog = false
+                    viewModel.addCall(number)
+                }
+            )
+        }
+
+        // Quick Decline Bottom Sheet
+        if (showQuickDeclineSheet) {
+            QuickDeclineDrawer(
+                responses = quickResponses.map { it.text },
+                onDismiss = { showQuickDeclineSheet = false },
+                onSelect = { text ->
+                    showQuickDeclineSheet = false
+                    viewModel.quickDeclineCall(text)
+                }
+            )
+        }
+
+        // In-call Keypad Dialog
+        if (showInCallKeypad) {
+            InCallKeypadDialog(
+                onDismiss = { showInCallKeypad = false },
+                onDigit = { digit -> viewModel.appendDigit(digit) }
+            )
+        }
+
+        // Full Screen pitch-black overlay and touch consumer when brought to ear
+        if (isNearEar) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                awaitPointerEvent()
+                            }
+                        }
+                    }
+            )
+        }
     }
 }
 
@@ -112,9 +234,15 @@ private fun FullScreenCallView(
     onToggleSpeaker: () -> Unit,
     onToggleHold: () -> Unit,
     onToggleRecord: () -> Unit,
-    onSwitchMode: (OverlayMode) -> Unit,
-    onOpenQuickDecline: () -> Unit,
-    onOpenKeypad: () -> Unit
+    onAddCall: () -> Unit,
+    onEndCurrentAndAnswer: () -> Unit,
+    onHoldCurrentAndAnswer: () -> Unit,
+    onMergeWaitingCall: () -> Unit,
+    onDeclineWaiting: () -> Unit,
+    onSwapCalls: () -> Unit,
+    onMergeHeldCall: () -> Unit,
+    onOpenKeypad: () -> Unit,
+    onOpenQuickDecline: () -> Unit
 ) {
     val durationFormatted = remember(session.callDurationSeconds) {
         val mins = session.callDurationSeconds / 60
@@ -153,35 +281,16 @@ private fun FullScreenCallView(
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Bar: Mode switcher
+            // Top Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 NeobrutalBadge(
-                    text = if (session.isIncoming) "INCOMING CALL" else "ACTIVE CALL",
+                    text = if (session.isConference) "CONFERENCE CALL" else if (session.isIncoming) "INCOMING CALL" else "ACTIVE CALL",
                     color = if (session.isIncoming) NeobrutalPink else NeobrutalYellow
                 )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NeobrutalButton(
-                        onClick = { onSwitchMode(OverlayMode.POP_UP) },
-                        text = "POP-UP",
-                        containerColor = NeobrutalYellow,
-                        borderWidth = 2.dp,
-                        shadowOffset = 2.dp,
-                        testTag = "btn_switch_popup"
-                    )
-                    NeobrutalButton(
-                        onClick = { onSwitchMode(OverlayMode.MINI_POP_UP) },
-                        text = "MINI",
-                        containerColor = NeobrutalCyan,
-                        borderWidth = 2.dp,
-                        shadowOffset = 2.dp,
-                        testTag = "btn_switch_mini"
-                    )
-                }
             }
 
             // Caller Identity Box
@@ -295,6 +404,150 @@ private fun FullScreenCallView(
                                     color = NeobrutalWhite
                                 )
                             )
+                        }
+                    }
+                }
+
+                // Call On Hold Banner (if any)
+                if (session.heldCall != null) {
+                    NeobrutalCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = NeobrutalOrange,
+                        shadowOffset = 3.dp
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "CALL ON HOLD",
+                                    style = TextStyle(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 10.sp,
+                                        color = NeobrutalBlack
+                                    )
+                                )
+                                Text(
+                                    text = "${session.heldCall.callerName} (${session.heldCall.number})",
+                                    style = TextStyle(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = NeobrutalBlack
+                                    ),
+                                    maxLines = 1
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                NeobrutalButton(
+                                    onClick = onSwapCalls,
+                                    text = "SWAP",
+                                    containerColor = NeobrutalWhite,
+                                    borderWidth = 2.dp,
+                                    shadowOffset = 2.dp,
+                                    testTag = "btn_swap_calls"
+                                )
+                                NeobrutalButton(
+                                    onClick = onMergeHeldCall,
+                                    text = "MERGE",
+                                    containerColor = NeobrutalCyan,
+                                    borderWidth = 2.dp,
+                                    shadowOffset = 2.dp,
+                                    testTag = "btn_merge_held_calls"
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Second Incoming Call (Call Waiting) Alert Card with clear options
+                if (session.callWaiting != null) {
+                    NeobrutalCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = NeobrutalPink,
+                        shadowOffset = 4.dp
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                NeobrutalBadge(
+                                    text = "INCOMING SECOND CALL",
+                                    color = NeobrutalYellow
+                                )
+                                Text(
+                                    text = "CALL WAITING",
+                                    style = TextStyle(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 11.sp,
+                                        color = NeobrutalBlack
+                                    )
+                                )
+                            }
+                            Text(
+                                text = "${session.callWaiting.callerName.uppercase()} (${session.callWaiting.number})",
+                                style = TextStyle(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 14.sp,
+                                    color = NeobrutalBlack
+                                )
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                NeobrutalButton(
+                                    onClick = onEndCurrentAndAnswer,
+                                    text = "END CURRENT & ANSWER",
+                                    containerColor = NeobrutalRed,
+                                    contentColor = NeobrutalWhite,
+                                    modifier = Modifier.weight(1f),
+                                    testTag = "btn_end_and_answer"
+                                )
+                                NeobrutalButton(
+                                    onClick = onHoldCurrentAndAnswer,
+                                    text = "HOLD & ANSWER",
+                                    containerColor = NeobrutalGreen,
+                                    contentColor = NeobrutalBlack,
+                                    modifier = Modifier.weight(1f),
+                                    testTag = "btn_hold_and_answer"
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                NeobrutalButton(
+                                    onClick = onMergeWaitingCall,
+                                    text = "MERGE CALLS",
+                                    containerColor = NeobrutalCyan,
+                                    contentColor = NeobrutalBlack,
+                                    modifier = Modifier.weight(1f),
+                                    testTag = "btn_merge_waiting_calls"
+                                )
+                                NeobrutalButton(
+                                    onClick = onDeclineWaiting,
+                                    text = "DECLINE",
+                                    containerColor = NeobrutalWhite,
+                                    contentColor = NeobrutalBlack,
+                                    modifier = Modifier.weight(1f),
+                                    testTag = "btn_decline_waiting"
+                                )
+                            }
                         }
                     }
                 }
@@ -431,12 +684,12 @@ private fun FullScreenCallView(
                             testTag = "btn_incall_record"
                         )
                         InCallControlButton(
-                            text = "QUICK MSG",
-                            icon = Icons.Default.Message,
+                            text = "ADD CALL",
+                            icon = Icons.Default.Add,
                             isActive = false,
-                            onClick = onOpenQuickDecline,
+                            onClick = onAddCall,
                             modifier = Modifier.weight(1f),
-                            testTag = "btn_incall_quick_msg"
+                            testTag = "btn_incall_add_call"
                         )
                     }
 
@@ -475,7 +728,10 @@ private fun PopUpCallHud(
     onDecline: () -> Unit,
     onEndCall: () -> Unit,
     onExpand: () -> Unit,
-    onMini: () -> Unit,
+    onEndCurrentAndAnswer: () -> Unit,
+    onHoldCurrentAndAnswer: () -> Unit,
+    onMergeWaitingCall: () -> Unit,
+    onDeclineWaiting: () -> Unit,
     onOpenQuickDecline: () -> Unit
 ) {
     val durationFormatted = remember(session.callDurationSeconds) {
@@ -489,6 +745,7 @@ private fun PopUpCallHud(
             .fillMaxWidth()
             .padding(12.dp)
             .testTag("popup_call_hud")
+            .clickable { onExpand() }
     ) {
         NeobrutalCard(
             modifier = Modifier.fillMaxWidth(),
@@ -498,9 +755,10 @@ private fun PopUpCallHud(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable { onExpand() }
                     .padding(14.dp)
             ) {
-                // Header row
+                // Header row (tapping anywhere on the pop-up opens full screen)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -511,22 +769,10 @@ private fun PopUpCallHud(
                         color = NeobrutalWhite
                     )
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        NeobrutalButton(
-                            onClick = onMini,
-                            text = "MINI",
-                            containerColor = NeobrutalCyan,
-                            borderWidth = 2.dp,
-                            shadowOffset = 2.dp
-                        )
-                        NeobrutalButton(
-                            onClick = onExpand,
-                            text = "EXPAND",
-                            containerColor = NeobrutalWhite,
-                            borderWidth = 2.dp,
-                            shadowOffset = 2.dp
-                        )
-                    }
+                    NeobrutalBadge(
+                        text = "TAP FOR FULLSCREEN",
+                        color = NeobrutalCyan
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -585,6 +831,71 @@ private fun PopUpCallHud(
                                 color = NeobrutalBlack
                             )
                         )
+                    }
+                }
+
+                // Second incoming call (call waiting) in pop-up
+                if (session.callWaiting != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    NeobrutalCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = NeobrutalPink,
+                        shadowOffset = 3.dp
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "SECOND CALL: ${session.callWaiting.callerName.uppercase()} (${session.callWaiting.number})",
+                                style = TextStyle(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.sp,
+                                    color = NeobrutalBlack
+                                )
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                NeobrutalButton(
+                                    onClick = onEndCurrentAndAnswer,
+                                    text = "END THIS & PICK UP",
+                                    containerColor = NeobrutalRed,
+                                    contentColor = NeobrutalWhite,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                NeobrutalButton(
+                                    onClick = onHoldCurrentAndAnswer,
+                                    text = "HOLD & PICK UP",
+                                    containerColor = NeobrutalGreen,
+                                    contentColor = NeobrutalBlack,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                NeobrutalButton(
+                                    onClick = onMergeWaitingCall,
+                                    text = "MERGE CALLS",
+                                    containerColor = NeobrutalCyan,
+                                    contentColor = NeobrutalBlack,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                NeobrutalButton(
+                                    onClick = onDeclineWaiting,
+                                    text = "DECLINE",
+                                    containerColor = NeobrutalWhite,
+                                    contentColor = NeobrutalBlack,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -658,6 +969,7 @@ private fun MiniPopUpCallHud(
             .fillMaxWidth()
             .padding(8.dp)
             .testTag("mini_popup_call_hud")
+            .clickable { onExpand() }
     ) {
         NeobrutalCard(
             modifier = Modifier.fillMaxWidth(),
@@ -667,14 +979,15 @@ private fun MiniPopUpCallHud(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable { onExpand() }
                     .padding(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Left avatar & caller info
+                // Left avatar & caller info (tap to go full screen)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { onExpand() }
+                    modifier = Modifier.weight(1f)
                 ) {
                     Box(
                         modifier = Modifier
@@ -719,39 +1032,23 @@ private fun MiniPopUpCallHud(
                     }
                 }
 
-                // Tiny action buttons
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    NeobrutalIconButton(
-                        onClick = onExpand,
-                        containerColor = NeobrutalYellow,
-                        size = 36.dp,
-                        shadowOffset = 2.dp,
-                        icon = {
-                            Icon(
-                                Icons.Default.Fullscreen,
-                                contentDescription = "Expand",
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    )
-
-                    NeobrutalIconButton(
-                        onClick = onEndCall,
-                        containerColor = NeobrutalRed,
-                        contentColor = NeobrutalWhite,
-                        size = 36.dp,
-                        shadowOffset = 2.dp,
-                        testTag = "mini_end_call_btn",
-                        icon = {
-                            Icon(
-                                Icons.Default.CallEnd,
-                                contentDescription = "End Call",
-                                tint = NeobrutalWhite,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    )
-                }
+                // End call button only
+                NeobrutalIconButton(
+                    onClick = onEndCall,
+                    containerColor = NeobrutalRed,
+                    contentColor = NeobrutalWhite,
+                    size = 36.dp,
+                    shadowOffset = 2.dp,
+                    testTag = "mini_end_call_btn",
+                    icon = {
+                        Icon(
+                            Icons.Default.CallEnd,
+                            contentDescription = "End Call",
+                            tint = NeobrutalWhite,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                )
             }
         }
     }
@@ -937,6 +1234,152 @@ private fun InCallControlButton(
                 ),
                 maxLines = 1
             )
+        }
+    }
+}
+
+// --- Add Another Call Dialog ---
+@Composable
+private fun AddCallDialog(
+    frequentContacts: List<ContactEntity>,
+    onDismiss: () -> Unit,
+    onPlaceCall: (String) -> Unit
+) {
+    var dialNumber by remember { mutableStateOf("") }
+
+    NeobrutalDialog(
+        onDismissRequest = onDismiss,
+        title = "ADD ANOTHER CALL",
+        titleColor = NeobrutalYellow
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Enter a number or pick a contact to call while holding the current call.",
+                style = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = Color.DarkGray
+                )
+            )
+
+            // Number input field
+            NeobrutalTextField(
+                value = dialNumber,
+                onValueChange = { dialNumber = it },
+                placeholder = "ENTER PHONE NUMBER",
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // Dialpad grid
+            val rows = listOf(
+                listOf("1", "2", "3"),
+                listOf("4", "5", "6"),
+                listOf("7", "8", "9"),
+                listOf("*", "0", "#")
+            )
+            rows.forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    row.forEach { digit ->
+                        NeobrutalButton(
+                            onClick = { dialNumber += digit },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp),
+                            text = digit,
+                            containerColor = NeobrutalWhite,
+                            borderWidth = 2.dp,
+                            shadowOffset = 2.dp
+                        )
+                    }
+                }
+            }
+
+            // Quick select from frequent contacts
+            if (frequentContacts.isNotEmpty()) {
+                Text(
+                    text = "OR PICK FROM RECENT:",
+                    style = TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 11.sp,
+                        color = NeobrutalBlack
+                    )
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 140.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(frequentContacts.take(5)) { contact ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(NeobrutalWhite)
+                                .border(BorderStroke(2.dp, NeobrutalBlack))
+                                .clickable { onPlaceCall(contact.phoneNumber) }
+                                .padding(8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = contact.displayName.uppercase(),
+                                    style = TextStyle(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 12.sp,
+                                        color = NeobrutalBlack
+                                    ),
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = contact.phoneNumber,
+                                    style = TextStyle(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                        color = Color.DarkGray
+                                    )
+                                )
+                            }
+                            NeobrutalBadge(
+                                text = "CALL",
+                                color = NeobrutalGreen
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Action Buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                NeobrutalButton(
+                    onClick = onDismiss,
+                    text = "CANCEL",
+                    containerColor = NeobrutalWhite,
+                    modifier = Modifier.weight(1f)
+                )
+                NeobrutalButton(
+                    onClick = {
+                        if (dialNumber.isNotBlank()) {
+                            onPlaceCall(dialNumber)
+                        }
+                    },
+                    text = "CALL",
+                    containerColor = NeobrutalGreen,
+                    contentColor = NeobrutalBlack,
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
     }
 }

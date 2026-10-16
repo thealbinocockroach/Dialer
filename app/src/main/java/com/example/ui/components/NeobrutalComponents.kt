@@ -3,9 +3,11 @@ package com.example.ui.components
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -13,6 +15,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.ui.theme.*
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NeobrutalCard(
     modifier: Modifier = Modifier,
@@ -39,6 +44,7 @@ fun NeobrutalCard(
     shadowOffset: Dp = 4.dp,
     testTag: String? = null,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     val tagModifier = if (testTag != null) Modifier.testTag(testTag) else Modifier
@@ -57,9 +63,24 @@ fun NeobrutalCard(
         )
 
         // Main Card Foreground
-        val clickModifier = if (onClick != null) {
-            Modifier.clickable(onClick = onClick)
-        } else Modifier
+        val clickModifier = when {
+            onLongClick != null && onClick != null -> {
+                Modifier.combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick
+                )
+            }
+            onLongClick != null -> {
+                Modifier.combinedClickable(
+                    onClick = {},
+                    onLongClick = onLongClick
+                )
+            }
+            onClick != null -> {
+                Modifier.clickable(onClick = onClick)
+            }
+            else -> Modifier
+        }
 
         Box(
             modifier = Modifier
@@ -73,10 +94,12 @@ fun NeobrutalCard(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun NeobrutalButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
     text: String? = null,
     containerColor: Color = NeobrutalYellow,
     contentColor: Color = NeobrutalBlack,
@@ -98,6 +121,23 @@ fun NeobrutalButton(
     )
 
     val tagModifier = if (testTag != null) Modifier.testTag(testTag) else Modifier
+
+    val clickModifier = if (onLongClick != null) {
+        Modifier.combinedClickable(
+            interactionSource = interactionSource,
+            indication = null,
+            enabled = enabled,
+            onClick = onClick,
+            onLongClick = onLongClick
+        )
+    } else {
+        Modifier.clickable(
+            interactionSource = interactionSource,
+            indication = null,
+            enabled = enabled,
+            onClick = onClick
+        )
+    }
 
     Box(
         modifier = modifier
@@ -123,12 +163,7 @@ fun NeobrutalButton(
                     .offset(x = translation, y = translation)
                     .background(if (enabled) containerColor else Color(0xFFD4D4D4))
                     .border(BorderStroke(borderWidth, borderColor))
-                    .clickable(
-                        interactionSource = interactionSource,
-                        indication = null,
-                        enabled = enabled,
-                        onClick = onClick
-                    )
+                    .then(clickModifier)
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -322,6 +357,31 @@ fun NeobrutalIconButton(
 }
 
 @Composable
+fun NeobrutalFloatingKeypadButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    NeobrutalIconButton(
+        onClick = onClick,
+        modifier = modifier,
+        containerColor = NeobrutalGreen,
+        contentColor = NeobrutalBlack,
+        borderColor = NeobrutalBlack,
+        shadowOffset = 4.dp,
+        size = 58.dp,
+        testTag = "floating_keypad_button",
+        icon = {
+            Icon(
+                imageVector = Icons.Default.Dialpad,
+                contentDescription = "Open Keypad",
+                tint = NeobrutalBlack,
+                modifier = Modifier.size(28.dp)
+            )
+        }
+    )
+}
+
+@Composable
 fun NeobrutalTextField(
     value: String,
     onValueChange: (String) -> Unit,
@@ -501,27 +561,29 @@ fun NeobrutalDialog(
                         .background(titleColor)
                         .border(BorderStroke(2.dp, NeobrutalBlack))
                         .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Text(
+                        text = "<",
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 18.sp,
+                            color = NeobrutalBlack
+                        ),
+                        modifier = Modifier
+                            .clickable { onDismissRequest() }
+                            .padding(end = 12.dp)
+                    )
                     Text(
                         text = title.uppercase(),
                         style = TextStyle(
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Black,
-                            fontSize = 16.sp,
-                            color = NeobrutalBlack
-                        )
-                    )
-                    Text(
-                        text = "[X]",
-                        style = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 16.sp,
+                            fontSize = 15.sp,
                             color = NeobrutalBlack
                         ),
-                        modifier = Modifier.clickable { onDismissRequest() }
+                        modifier = Modifier.weight(1f)
                     )
                 }
 
